@@ -1,0 +1,6 @@
+{
+  "name": "ERP System",
+  "description": "Translation Management System (TMS) with role-based dashboards, multi-currency accounting, client receivables, and automated WhatsApp CRM.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

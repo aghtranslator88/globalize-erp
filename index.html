@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script id="fetch-safety-patch">
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          if (typeof originalFetch !== 'function') {
+            try {
+              var proto = Object.getPrototypeOf(window);
+              if (proto && typeof proto.fetch === 'function') {
+                originalFetch = proto.fetch.bind(proto);
+              }
+            } catch (e) {}
+          }
+          if (typeof originalFetch !== 'function' && typeof Window !== 'undefined' && Window.prototype) {
+            try {
+              var winDesc = Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+              if (winDesc && typeof winDesc.get === 'function') {
+                originalFetch = winDesc.get.call(window);
+              }
+            } catch (e) {}
+          }
+
+          function patchObject(obj) {
+            if (!obj) return;
+            try {
+              var desc = Object.getOwnPropertyDescriptor(obj, 'fetch');
+              if (desc && !desc.configurable) {
+                return;
+              }
+              Object.defineProperty(obj, 'fetch', {
+                configurable: true,
+                enumerable: true,
+                get: function() {
+                  return originalFetch;
+                },
+                set: function(val) {
+                  originalFetch = val;
+                }
+              });
+            } catch (e) {}
+          }
+
+          try { delete window.fetch; } catch(e) {}
+          try { if (typeof Window !== 'undefined' && Window.prototype) delete Window.prototype.fetch; } catch(e) {}
+          try { delete globalThis.fetch; } catch(e) {}
+          try { delete self.fetch; } catch(e) {}
+
+          patchObject(window);
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            patchObject(Window.prototype);
+          }
+          patchObject(globalThis);
+          patchObject(self);
+        } catch (err) {}
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Globalize ERP</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

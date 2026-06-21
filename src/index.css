@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-brand-navy: #002896;
+  --color-brand-navy-dark: #001464;
+  --color-brand-navy-hover: #00288C;
+  --color-brand-navy-light: #C8DCF0;
+  
+  --color-brand-gold: #F0B414;
+  --color-brand-gold-dark: #D4960F;
+  --color-brand-gold-hover: #F0B428;
+  --color-brand-gold-light: #F0DC8C;
+  
+  --color-brand-bg: #F4F6F9;
+  --color-brand-surface: #FFFFFF;
+  --color-brand-border: #E2E8F0;
+  --color-brand-text: #1A202C;
+  --color-brand-text-muted: #718096;
+}
+
+:root {
+  --color-primary: #002896;
+  --color-primary-dark: #001464;
+  --color-primary-hover: #00288C;
+  --color-primary-light: #C8DCF0;
+
+  --color-accent: #F0B414;
+  --color-accent-dark: #D4960F;
+  --color-accent-hover: #F0B428;
+  --color-accent-light: #F0DC8C;
+
+  --color-bg: #F4F6F9;
+  --color-surface: #FFFFFF;
+  --color-border: #E2E8F0;
+  --color-text: #1A202C;
+  --color-text-muted: #718096;
+}
+
+body {
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
