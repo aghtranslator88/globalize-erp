@@ -10,7 +10,7 @@ import {
   Paperclip, Trash2, FileText, Activity, AlertTriangle, Users, Gauge,
   FileSpreadsheet
 } from 'lucide-react';
-import { Task, Client, Profile, ServiceType, IntakeChannel, TaskAttachment, PaymentMethod, Quotation, Invoice, Lead } from '../types';
+import { Task, Client, Profile, ServiceType, IntakeChannel, TaskAttachment, TaskAssignment, PaymentMethod, Quotation, Invoice, Lead } from '../types';
 import dbInstance from '../db/store';
 import jsPDF from 'jspdf';
 import { ExportProtectionModal } from './ExportProtectionModal';
@@ -194,7 +194,222 @@ export const TasksPage: React.FC<TasksPageProps> = ({
   const [accPaymentCurrency, setAccPaymentCurrency] = useState<'EGP' | 'USD' | 'AED'>('EGP');
   const [auditViewMode, setAuditViewMode] = useState<'timeline' | 'table'>('timeline');
 
+  // Enhanced Multi-Linguist assignment states
+  const [asgLinguistId, setAsgLinguistId] = useState<string>('');
+  const [asgRole, setAsgRole] = useState<'translation' | 'revision' | 'proofreading'>('translation');
+  const [asgPart, setAsgPart] = useState<string>('');
+  const [asgLangPair, setAsgLangPair] = useState<string>('');
+  const [asgWords, setAsgWords] = useState<string>('');
+  const [asgPages, setAsgPages] = useState<string>('');
+  const [asgDeadline, setAsgDeadline] = useState<string>('');
+  const [asgRelatedAssignmentId, setAsgRelatedAssignmentId] = useState<string>('');
+  const [asgRateType, setAsgRateType] = useState<'word' | 'page' | 'fixed'>('word');
+  const [asgRateWords, setAsgRateWords] = useState<string>('');
+  const [asgRatePage, setAsgRatePage] = useState<string>('');
+  const [asgRateFixed, setAsgRateFixed] = useState<string>('');
+  const [asgNotes, setAsgNotes] = useState<string>('');
+
+  const [expandedAsgHistory, setExpandedAsgHistory] = useState<Record<string, boolean>>({});
+  const [correctionNoteMap, setCorrectionNoteMap] = useState<Record<string, string>>({});
+
+  // Compilation & Delivery states
+  const [compileFinalFile, setCompileFinalFile] = useState<TaskAttachment | null>(null);
+  const [compileFinalReviewedFile, setCompileFinalReviewedFile] = useState<TaskAttachment | null>(null);
+  const [compileDeliveryReadyFile, setCompileDeliveryReadyFile] = useState<TaskAttachment | null>(null);
+  const [showOverrideForm, setShowOverrideForm] = useState<boolean>(false);
+  const [overrideReason, setOverrideReason] = useState<string>('');
+
   const isAdminOrStaff = currentRole === 'owner' || currentRole === 'admin' || currentRole === 'sales' || currentRole === 'accountant';
+
+  // Initialize compilation files and form when selected task changes
+  useEffect(() => {
+    if (selectedTaskForAccDetails) {
+      setCompileFinalFile(selectedTaskForAccDetails.finalFile || null);
+      setCompileFinalReviewedFile(selectedTaskForAccDetails.finalReviewedFile || null);
+      setCompileDeliveryReadyFile(selectedTaskForAccDetails.deliveryReadyFile || null);
+      setShowOverrideForm(false);
+      setOverrideReason('');
+      
+      // Reset assignment form fields
+      setAsgLinguistId('');
+      setAsgRole('translation');
+      setAsgPart('');
+      setAsgLangPair('');
+      setAsgWords('');
+      setAsgPages('');
+      setAsgDeadline('');
+      setAsgRelatedAssignmentId('');
+      setAsgRateType('word');
+      setAsgRateWords('');
+      setAsgRatePage('');
+      setAsgRateFixed('');
+      setAsgNotes('');
+    }
+  }, [selectedTaskForAccDetails]);
+
+  const handleCompileFileUpload = (e: React.ChangeEvent<HTMLInputElement>, fieldName: 'finalFile' | 'finalReviewedFile' | 'deliveryReadyFile') => {
+    e.preventDefault();
+    if (!selectedTaskForAccDetails) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    const reader = new FileReader();
+    const isSmall = file.size < 400 * 1024;
+    
+    const onLoaded = (url: string) => {
+      const attachment: TaskAttachment = {
+        id: `att-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        url: url,
+        uploadedAt: new Date().toISOString()
+      };
+      
+      if (fieldName === 'finalFile') {
+        setCompileFinalFile(attachment);
+        selectedTaskForAccDetails.finalFile = attachment;
+      } else if (fieldName === 'finalReviewedFile') {
+        setCompileFinalReviewedFile(attachment);
+        selectedTaskForAccDetails.finalReviewedFile = attachment;
+      } else if (fieldName === 'deliveryReadyFile') {
+        setCompileDeliveryReadyFile(attachment);
+        selectedTaskForAccDetails.deliveryReadyFile = attachment;
+      }
+      
+      dbInstance.updateTask(selectedTaskForAccDetails);
+      setSelectedTaskForAccDetails({ ...selectedTaskForAccDetails });
+    };
+
+    if (isSmall) {
+      reader.onloadend = () => {
+        onLoaded(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const objectUrl = URL.createObjectURL(file);
+      onLoaded(objectUrl);
+    }
+  };
+
+  const handleMarkReadyForDelivery = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTaskForAccDetails) return;
+    
+    const relevantAsgs = dbInstance.assignments.filter(a => a.taskId === selectedTaskForAccDetails.id);
+    const allApproved = relevantAsgs.length > 0 && relevantAsgs.every(a => a.status === 'approved');
+    
+    if (!allApproved && !showOverrideForm) {
+      setShowOverrideForm(true);
+      return;
+    }
+    
+    if (!allApproved && showOverrideForm && !overrideReason.trim()) {
+      alert(isRtl ? 'يرجى تقديم سبب لتجاوز الموافقة الإدارية.' : 'Please provide an administrative override reason.');
+      return;
+    }
+    
+    dbInstance.markTaskReadyForDelivery(
+      selectedTaskForAccDetails.id,
+      overrideReason || undefined
+    );
+    
+    const updatedTask = dbInstance.tasks.find(t => t.id === selectedTaskForAccDetails.id);
+    if (updatedTask) {
+      setSelectedTaskForAccDetails({ ...updatedTask });
+    }
+    setTasks([...dbInstance.tasks]);
+    success(isRtl ? 'تم تحديث حالة المهمة بنجاح!' : 'Task status updated successfully!');
+  };
+
+  const handleAddAssignment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTaskForAccDetails) return;
+
+    const task = selectedTaskForAccDetails;
+
+    // Convert rate values
+    const ratePerWord = asgRateType === 'word' ? parseFloat(asgRateWords) || undefined : undefined;
+    const ratePerPage = asgRateType === 'page' ? parseFloat(asgRatePage) || undefined : undefined;
+    const rateFixed = asgRateType === 'fixed' ? parseFloat(asgRateFixed) || undefined : undefined;
+
+    const newAsgInput: Omit<TaskAssignment, 'id' | 'assignedBy' | 'assignedAt' | 'calculatedAmount'> = {
+      taskId: task.id,
+      taskRef: task.referenceNo,
+      taskFileName: task.attachments && task.attachments.length > 0 ? task.attachments[0].name : '',
+      translatorId: asgLinguistId,
+      assignmentType: asgRole,
+      wordCountAssigned: parseInt(asgWords) || 0,
+      pageCountAssigned: parseInt(asgPages) || 0,
+      ratePerWord,
+      ratePerPage,
+      rateFixed,
+      overtimeHours: 0,
+      status: 'assigned',
+      deadline: asgDeadline || undefined,
+      notes: asgNotes || undefined,
+      assignedPart: asgPart || undefined,
+      languagePair: asgLangPair || undefined,
+      relatedAssignmentId: asgRelatedAssignmentId || undefined,
+      translatedAttachments: []
+    };
+
+    dbInstance.assignTranslator(newAsgInput);
+    
+    const updatedTask = dbInstance.tasks.find(t => t.id === task.id);
+    if (updatedTask) {
+      setSelectedTaskForAccDetails({ ...updatedTask });
+    }
+    setTasks([...dbInstance.tasks]);
+
+    // Reset Form Fields
+    setAsgLinguistId('');
+    setAsgRole('translation');
+    setAsgPart('');
+    setAsgLangPair('');
+    setAsgWords('');
+    setAsgPages('');
+    setAsgDeadline('');
+    setAsgRelatedAssignmentId('');
+    setAsgRateType('word');
+    setAsgRateWords('');
+    setAsgRatePage('');
+    setAsgRateFixed('');
+    setAsgNotes('');
+
+    success(isRtl ? 'تم إضافة التعيين بنجاح!' : 'Assignment has been added successfully!');
+  };
+
+  const handleRemoveAssignment = (assignmentId: string) => {
+    confirm(
+      isRtl ? 'هل أنت متأكد من حذف هذا التعيين؟' : 'Are you sure you want to delete this assignment?',
+      () => {
+        const successRemove = dbInstance.withdrawAssignment(assignmentId);
+        if (successRemove) {
+          const task = selectedTaskForAccDetails;
+          if (task) {
+            const updatedTask = dbInstance.tasks.find(t => t.id === task.id);
+            if (updatedTask) setSelectedTaskForAccDetails({ ...updatedTask });
+          }
+          setTasks([...dbInstance.tasks]);
+          success(isRtl ? 'تم حذف التعيين بنجاح!' : 'Assignment removed successfully!');
+        } else {
+          error(isRtl ? 'فشل حذف التعيين.' : 'Failed to remove assignment.');
+        }
+      },
+      undefined,
+      { isRtl }
+    );
+  };
+
+  const handleReturnForCorrection = (assignmentId: string) => {
+    const note = correctionNoteMap[assignmentId];
+    if (!note) return;
+    dbInstance.submitReviewAssignment(assignmentId, undefined, note, 'returned_for_correction', note);
+    const updatedTask = dbInstance.tasks.find(t => t.id === selectedTaskForAccDetails?.id);
+    if (updatedTask) setSelectedTaskForAccDetails({ ...updatedTask });
+    alert('Reverted back to linguist for corrections.');
+  };
 
   const handleBulkStatusUpdate = () => {
     if (!bulkStatus || selectedTaskIds.length === 0) return;
@@ -1357,6 +1572,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                   // check if there is assignment
                   const asg = dbInstance.assignments.find(a => a.taskId === t.id);
                   const assignedLinguist = asg ? dbInstance.profiles.find(p => p.id === asg.translatorId) : null;
+                  const taskAsgs = dbInstance.assignments.filter(a => a.taskId === t.id);
 
                   const tCurrency = t.amountUsd > 0 ? 'USD' : (t.amountAed > 0 ? 'AED' : 'EGP');
                   let tTotal = t.amountEgp;
@@ -1509,14 +1725,16 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                           <span className="text-zinc-400 italic text-[10px] font-medium">—</span>
                         )}
                       </td>
-                      <td className="px-5 py-3.5 text-center">
-                        {!assignedLinguist ? (
+                      <td className="px-5 py-3.5 text-center min-w-[200px]">
+                        {taskAsgs.length === 0 ? (
                           <div className="flex flex-col gap-1.5 items-center justify-center w-full shrink-0">
                             <button
-                              onClick={() => handleOpenAssign(t)}
-                              className="px-2.5 py-1 text-[10px] font-semibold bg-zinc-900 hover:bg-zinc-800 text-white rounded cursor-pointer transition-colors inline-flex items-center justify-center gap-1 shrink-0 w-full"
+                              onClick={() => {
+                                setSelectedTaskForAccDetails(t);
+                              }}
+                              className="px-2.5 py-1.5 text-[10px] font-semibold bg-zinc-900 hover:bg-zinc-850 text-white rounded cursor-pointer transition-colors inline-flex items-center justify-center gap-1 shrink-0 w-full animate-pulse"
                             >
-                              <UserPlus size={10} /> {isRtl ? 'تعيين مترجم' : 'Assign Translator'}
+                              <UserPlus size={10} /> {isRtl ? 'تعيين لغويين' : 'Assign Linguists'}
                             </button>
                             {isAdminOrStaff && t.status !== 'cancelled' && (
                               <button
@@ -1526,6 +1744,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                                     () => {
                                       dbInstance.cancelTask(t.id);
                                       success(isRtl ? 'تم إلغاء المهمة بنجاح!' : 'Task has been cancelled successfully!');
+                                      setTasks([...dbInstance.tasks]);
                                     },
                                     undefined,
                                     { isRtl }
@@ -1538,71 +1757,107 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                             )}
                           </div>
                         ) : (
-                          <div className="flex flex-col items-center justify-center gap-1 shrink-0 text-center">
-                            <span className="text-[10px] font-semibold text-zinc-900 block">
-                              {assignedLinguist.fullName}
-                            </span>
+                          <div className="flex flex-col gap-2 text-center">
+                            {/* Assigned Specialists list */}
+                            <div className="space-y-1 text-left">
+                              {taskAsgs.map(asg => {
+                                const profile = dbInstance.profiles.find(p => p.id === asg.translatorId);
+                                const name = profile ? profile.fullName : asg.translatorId;
+                                const isTR = asg.assignmentType === 'translation';
+                                
+                                return (
+                                  <div key={asg.id} className="flex items-center justify-between gap-2 bg-zinc-50 p-1 rounded border border-zinc-200 text-[9px] font-sans">
+                                    <span className="font-semibold text-zinc-800 truncate max-w-[120px]" title={name}>
+                                      <span className={`inline-block mr-1 px-1 rounded text-[8px] font-extrabold uppercase text-white ${isTR ? 'bg-indigo-650' : 'bg-purple-650'}`}>
+                                        {isTR ? 'TR' : 'REV'}
+                                      </span>
+                                      {name}
+                                    </span>
+                                    <span className={`px-1 rounded text-[8px] font-bold uppercase ${
+                                      asg.status === 'approved' ? 'bg-green-105 text-emerald-600 border border-emerald-200' :
+                                      asg.status === 'submitted' ? 'bg-indigo-50 text-indigo-700 animate-pulse border border-indigo-200' :
+                                      asg.status === 'returned_for_correction' ? 'bg-red-50 text-rose-600 font-bold border border-rose-200' :
+                                      asg.status === 'in_progress' ? 'bg-amber-50 text-amber-600 border border-amber-200' :
+                                      'bg-zinc-50 text-zinc-500 border-zinc-200'
+                                    }`}>
+                                      {asg.status.replace('_', ' ')}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
 
-                            <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded font-mono uppercase border ${
-                              asg?.status === 'assigned' ? 'bg-zinc-50 text-zinc-500 border-zinc-200' :
-                              asg?.status === 'in_progress' ? 'bg-amber-50 text-amber-500 border-amber-200' :
-                              asg?.status === 'submitted' ? 'bg-indigo-50 text-indigo-550 border-indigo-200 animate-pulse' :
-                              'bg-green-50 text-emerald-500 border-emerald-250 font-bold'
-                            }`}>
-                              {asg?.status === 'assigned' ? 'assigned' : asg?.status.replace('_', ' ')}
-                            </span>
+                            {/* Progress bar */}
+                            {(() => {
+                              const completed = taskAsgs.filter(a => a.status === 'approved').length;
+                              const total = taskAsgs.length;
+                              const totalWordsAssigned = taskAsgs.reduce((sum, a) => sum + (a.wordCountAssigned || 0), 0);
+                              const submittedWords = taskAsgs.filter(a => a.status === 'submitted' || a.status === 'approved').reduce((sum, a) => sum + (a.wordCountAssigned || 0), 0);
+                              const progressPct = totalWordsAssigned > 0 ? Math.round((submittedWords / totalWordsAssigned) * 100) : 0;
+                              
+                              return (
+                                <div className="space-y-1">
+                                  <div className="flex justify-between text-[8px] font-bold text-zinc-500 uppercase font-mono">
+                                    <span>{isRtl ? 'الأقسام:' : 'Parts:'} {completed}/{total}</span>
+                                    <span>{progressPct}% {isRtl ? 'منجز' : 'Done'}</span>
+                                  </div>
+                                  <div className="w-full bg-zinc-250 h-1.5 rounded-full overflow-hidden">
+                                    <div 
+                                      className="bg-zinc-900 h-full rounded-full transition-all duration-350" 
+                                      style={{ width: `${progressPct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
-                            {asg?.translatedAttachments && asg.translatedAttachments.length > 0 && (
-                              <div className="mt-2 p-1.5 bg-emerald-50 rounded-lg border border-emerald-150 space-y-1 w-full text-left">
-                                <span className="text-[8px] font-black text-emerald-800 uppercase block font-mono">
-                                  📥 {isRtl ? 'الترجمة المستلمة:' : 'Recv Translation:'}
-                                </span>
-                                {asg.translatedAttachments.map(att => (
-                                  <a
-                                    key={att.id}
-                                    href={att.url}
-                                    download={att.name}
-                                    title={`${att.name} (${(att.size / 1024).toFixed(1)} KB)`}
-                                    className="flex items-center gap-1 bg-white hover:bg-emerald-100 text-zinc-900 border border-emerald-200 p-1 rounded text-[8px] font-mono transition-all truncate cursor-pointer"
-                                    onClick={() => {
-                                      alert(isRtl ? `بدء تنزيل مستند الترجمة المصدرية: ${att.name}` : `Downloading translation asset file: ${att.name}`);
-                                    }}
-                                  >
-                                    <FileText size={8} className="text-emerald-500 shrink-0" />
-                                    <span className="truncate max-w-[80px] font-bold">{att.name}</span>
-                                  </a>
-                                ))}
-                              </div>
-                            )}
+                            {/* Quick files download */}
+                            {(() => {
+                              const files = taskAsgs.flatMap(a => a.translatedAttachments || []);
+                              if (files.length === 0) return null;
+                              return (
+                                <div className="mt-1 p-1 bg-emerald-50 rounded border border-emerald-150 space-y-1 text-left">
+                                  <span className="text-[7.5px] font-black text-emerald-800 uppercase block font-mono">
+                                    📥 {isRtl ? 'الملفات المرفوعة:' : 'Uploaded Drafts:'}
+                                  </span>
+                                  {files.map(att => (
+                                    <a
+                                      key={att.id}
+                                      href={att.url}
+                                      download={att.name}
+                                      className="flex items-center gap-1 bg-white hover:bg-emerald-100 text-zinc-900 border border-emerald-200 p-0.5 rounded text-[8px] font-mono transition-all truncate cursor-pointer"
+                                      onClick={() => {
+                                        alert(isRtl ? `تنزيل الملف: ${att.name}` : `Downloading file: ${att.name}`);
+                                      }}
+                                    >
+                                      <FileText size={8} className="text-emerald-555 shrink-0" />
+                                      <span className="truncate max-w-[120px] font-bold">{att.name}</span>
+                                    </a>
+                                  ))}
+                                </div>
+                              );
+                            })()}
 
-                            {asg?.status === 'submitted' && (
+                            {/* Action Buttons */}
+                            <div className="space-y-1 mt-1 border-t border-zinc-100 pt-1">
+                              {taskAsgs.some(a => a.status === 'submitted') && (
+                                <div className="px-1 py-0.5 bg-indigo-50 text-indigo-700 text-[8px] font-extrabold rounded border border-indigo-150 uppercase tracking-wider animate-pulse flex items-center justify-center gap-0.5">
+                                  ⚠️ {isRtl ? 'يتطلب المراجعة والاعتماد' : 'Needs Verification'}
+                                </div>
+                              )}
+
                               <button
-                                onClick={() => handleOpenVerify(asg)}
-                                className="mt-1 px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider flex items-center justify-center gap-1 shrink-0 shadow-sm"
+                                onClick={() => {
+                                  setSelectedTaskForAccDetails(t);
+                                  setAccPaymentAmt('');
+                                  setAccPaymentNotes('');
+                                }}
+                                className="w-full px-2 py-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-800 text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 border border-zinc-350 shadow-xs transition-colors"
                               >
-                                <CheckCircle size={10} /> Verify & Approve
+                                📊 {isRtl ? 'إدارة التكاليف والمهام' : 'Manage & Accruals'}
                               </button>
-                            )}
 
-                            {isAdminOrStaff && t.status !== 'completed' && t.status !== 'delivered' && t.status !== 'cancelled' && (
-                              <div className="mt-2 flex flex-col gap-1 w-full shrink-0 border-t border-zinc-100 pt-2 font-sans">
-                                <button
-                                  onClick={() => {
-                                    confirm(
-                                      isRtl ? 'هل تريد سحب المهمة وإلغاء التعيين من المترجم المختار؟' : 'Are you sure you want to withdraw this task assignment and unassign the translator?',
-                                      () => {
-                                        dbInstance.withdrawAssignment(t.id);
-                                        success(isRtl ? 'تم سحب المهمة وإلغاء التعيين بنجاح!' : 'Task assignment withdrawn and unassigned successfully!');
-                                      },
-                                      undefined,
-                                      { isRtl }
-                                    );
-                                  }}
-                                  className="w-full px-2 py-0.5 bg-red-50 hover:bg-red-100 text-red-650 border border-red-200 text-[8px] font-black rounded cursor-pointer uppercase text-center transition-all inline-flex items-center justify-center gap-0.5"
-                                >
-                                  ✖ {isRtl ? 'سحب التعيين' : 'Withdraw assignment'}
-                                </button>
-
+                              {isAdminOrStaff && t.status !== 'completed' && t.status !== 'delivered' && t.status !== 'cancelled' && (
                                 <button
                                   onClick={() => {
                                     confirm(
@@ -1610,71 +1865,59 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                                       () => {
                                         dbInstance.cancelTask(t.id);
                                         success(isRtl ? 'تم إلغاء المهمة بنجاح!' : 'Task has been cancelled successfully!');
+                                        setTasks([...dbInstance.tasks]);
                                       },
                                       undefined,
                                       { isRtl }
                                     );
                                   }}
-                                  className="w-full px-2 py-0.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-650 border border-zinc-300 text-[8px] font-black rounded cursor-pointer uppercase text-center transition-all inline-flex items-center justify-center gap-0.5"
+                                  className="w-full px-2 py-0.5 bg-red-50 hover:bg-red-100 text-red-650 border border-red-200 text-[8px] font-black rounded cursor-pointer uppercase text-center transition-all inline-flex items-center justify-center gap-0.5"
                                 >
-                                  ⛔ {isRtl ? 'إلغاء المهمة' : 'Cancel Task'}
+                                  ✖ {isRtl ? 'إلغاء المهمة' : 'Cancel Task'}
                                 </button>
-                              </div>
-                            )}
+                              )}
 
-                            {/* Always allow viewing accounting records */}
-                            <button
-                              onClick={() => {
-                                setSelectedTaskForAccDetails(t);
-                                setAccPaymentAmt('');
-                                setAccPaymentNotes('');
-                              }}
-                              className="w-full mt-2 px-2 py-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-800 text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 border border-zinc-300 shadow-xs transition-colors"
-                              title={isRtl ? 'عرض القيد المحاسبي وحركة الدفعات والتدقيق' : 'View accounting record, transactions & audit log'}
-                            >
-                              📊 {isRtl ? 'الحسابات والتدقيق' : 'View Accounting'}
-                            </button>
+                              {t.status === 'completed' && (
+                                <button
+                                  onClick={() => handleDeliverTask(t.id)}
+                                  className="w-full px-2 py-1 bg-zinc-900 hover:bg-zinc-850 text-white text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 shadow-xs transition-colors mt-1"
+                                >
+                                  {isRtl ? 'تسليم الملف للعميل' : 'Mark Delivered'}
+                                </button>
+                              )}
 
-                            {t.status === 'completed' && (
-                              <button
-                                onClick={() => handleDeliverTask(t.id)}
-                                className="w-full px-2 py-1 bg-zinc-900 hover:bg-zinc-850 text-white text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 shadow-xs transition-colors mt-1"
-                              >
-                                {isRtl ? 'تسليم الملف للعميل' : 'Mark Delivered'}
-                              </button>
-                            )}
+                              {(t.status === 'completed' || t.status === 'delivered') && (
+                                <button
+                                  onClick={() => handleCompleteTask(t.id)}
+                                  className="w-full px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 shadow-xs transition-colors mt-1"
+                                  title={isRtl ? 'إغلاق وتسوية الملف نهائياً' : 'Complete task and collect remaining balance'}
+                                >
+                                  ✅ {isRtl ? 'إغلاق وتسوية المهمة' : 'Complete Task'}
+                                </button>
+                              )}
 
-                            {(t.status === 'completed' || t.status === 'delivered') && (
-                              <button
-                                onClick={() => handleCompleteTask(t.id)}
-                                className="w-full px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 shadow-xs transition-colors mt-1"
-                                title={isRtl ? 'إغلاق وتسوية الملف نهائياً' : 'Complete task and collect remaining balance'}
-                              >
-                                ✅ {isRtl ? 'إغلاق وتسوية المهمة' : 'Complete Task'}
-                              </button>
-                            )}
+                              {t.status === 'completed' && (
+                                <div className="mt-1 space-y-1">
+                                  {(t.amountEgp - (t.paidAmountEgp || 0)) > 0 && (
+                                    <div className="px-1.5 py-0.5 bg-rose-50 text-rose-600 text-[9px] font-black rounded border border-rose-150 flex items-center gap-0.5 justify-center animate-pulse">
+                                      ⚠️ {isRtl ? 'طالب بالمبلغ المتبقي!' : 'Collect Remainder!'}
+                                    </div>
+                                  )}
 
-                            {t.status === 'completed' && (
-                              <div className="mt-1 space-y-1">
-                                {(t.amountEgp - (t.paidAmountEgp || 0)) > 0 && (
-                                  <div className="px-1.5 py-0.5 bg-rose-50 text-rose-600 text-[9px] font-black rounded border border-rose-150 flex items-center gap-0.5 justify-center animate-pulse">
-                                    ⚠️ {isRtl ? 'طالب بالمبلغ المتبقي!' : 'Collect Remainder!'}
-                                  </div>
-                                )}
-
-                                {(currentRole === 'owner' || currentRole === 'admin' || currentRole === 'sales' || currentRole === 'secretary' || currentRole === 'staff') && (
-                                  <button
-                                    onClick={() => {
-                                      setCertifiedTask(t);
-                                      setIsCertifiedModalOpen(true);
-                                    }}
-                                    className="w-full px-2 py-1 bg-amber-500 hover:bg-amber-600 text-slate-900 text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 shadow-xs transition-colors mt-1"
-                                  >
-                                    ⚖️ {isRtl ? 'تصدير نسخة معتمدة' : 'Export Certified Copy'}
-                                  </button>
-                                )}
-                              </div>
-                            )}
+                                  {(currentRole === 'owner' || currentRole === 'admin' || currentRole === 'sales' || currentRole === 'secretary' || currentRole === 'staff') && (
+                                    <button
+                                      onClick={() => {
+                                        setCertifiedTask(t);
+                                        setIsCertifiedModalOpen(true);
+                                      }}
+                                      className="w-full px-2 py-1 bg-amber-500 hover:bg-amber-600 text-slate-900 text-[9px] font-bold rounded cursor-pointer uppercase tracking-wider text-center flex items-center justify-center gap-1 shadow-xs transition-colors mt-1"
+                                    >
+                                      ⚖️ {isRtl ? 'تصدير نسخة معتمدة' : 'Export Certified Copy'}
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
                       </td>
@@ -4046,52 +4289,653 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                     )}
                   </div>
 
-                  {/* 3. Assigned Translator details */}
+                  {/* 3. Compilation & Final Delivery Center */}
                   <div className="bg-zinc-50/50 p-4 rounded-lg border border-zinc-200">
-                    <h4 className="font-bold text-zinc-700 uppercase tracking-wider mb-2 pb-1 border-b border-zinc-200 flex items-center gap-1">
-                      👤 {isRtl ? 'بيانات المترجم المكلّف وتكلفة التعيين' : 'Translator Cost Assignment'}
+                    <h4 className="font-bold text-zinc-700 uppercase tracking-wider mb-2 pb-1 border-b border-zinc-200 flex items-center gap-1.5">
+                      📦 {isRtl ? 'مركز تسليم الملفات المجمعة والنهائية' : 'Compilation & Final Delivery Center'}
                     </h4>
-                    {asg ? (
-                      <div className="space-y-2 text-zinc-800">
-                        <div className="grid grid-cols-2 gap-2 bg-white p-3 rounded border border-zinc-200">
-                          <div>
-                            <span className="text-[10px] text-zinc-400 uppercase font-semibold block">{isRtl ? 'المترجم' : 'Linguist'}</span>
-                            <span className="font-bold text-zinc-900 text-xs">{assignedLinguist?.fullName || 'Linguist Profile'}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] text-zinc-400 uppercase font-semibold block">{isRtl ? 'حالة التكليف' : 'Assignment Status'}</span>
-                            <span className="px-1.5 py-0.2 rounded text-[8px] bg-amber-50 text-amber-600 border border-amber-200 font-black uppercase inline-block">
-                              {asg.status}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2 bg-white p-2 rounded border border-zinc-200 text-center text-[10px]">
-                          <div>
-                            <span className="text-zinc-400 uppercase block">{isRtl ? 'الطريقة' : 'Rate Type'}</span>
-                            <span className="font-bold font-mono text-zinc-700 uppercase">
-                              {asg.ratePerWord ? 'Per Word' : asg.ratePerPage ? 'Per Page' : 'Fixed'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-zinc-400 uppercase block">{isRtl ? 'سعر الوحدة' : 'Rate'}</span>
-                            <span className="font-bold font-mono text-zinc-900">EGP {asg.rateFixed || asg.ratePerWord || asg.ratePerPage}</span>
-                          </div>
-                          <div>
-                            <span className="text-zinc-400 uppercase block">{isRtl ? 'التكلفة الإجمالية' : 'Accrued Cost'}</span>
-                            <span className="font-extrabold font-mono text-red-650 font-bold">EGP {asg.calculatedAmount?.toLocaleString() || '0'}</span>
+                    <form onSubmit={handleMarkReadyForDelivery} className="space-y-4">
+                      {/* File uploads */}
+                      <div className="space-y-2 text-[10px]">
+                        <div>
+                          <label className="block text-[10px] uppercase text-zinc-400 font-bold mb-1">
+                            {isRtl ? 'الملف المترجم المجمع (المسودة الأولى):' : 'Final Compiled Translated Draft:'}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="file" 
+                              onChange={(e) => handleCompileFileUpload(e, 'finalFile')}
+                              className="w-full p-1 border border-zinc-300 rounded text-[9px] bg-white cursor-pointer"
+                            />
+                            {compileFinalFile && (
+                              <a href={compileFinalFile.url} download={compileFinalFile.name} className="px-2 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded font-bold hover:bg-indigo-100 shrink-0">
+                                Down
+                              </a>
+                            )}
                           </div>
                         </div>
 
-                        <p className="text-[10px] text-zinc-400 italic">
-                          * Linguist expenses are automatically calculated and cleared upon supervisor approval.
-                        </p>
+                        <div>
+                          <label className="block text-[10px] uppercase text-zinc-400 font-bold mb-1">
+                            {isRtl ? 'الملف النهائي بعد المراجعة اللغوية:' : 'Final Reviewed & Polished Version:'}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="file" 
+                              onChange={(e) => handleCompileFileUpload(e, 'finalReviewedFile')}
+                              className="w-full p-1 border border-zinc-300 rounded text-[9px] bg-white cursor-pointer"
+                            />
+                            {compileFinalReviewedFile && (
+                              <a href={compileFinalReviewedFile.url} download={compileFinalReviewedFile.name} className="px-2 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded font-bold hover:bg-indigo-100 shrink-0">
+                                Down
+                              </a>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] uppercase text-zinc-400 font-bold mb-1">
+                            {isRtl ? 'النسخة الجاهزة للتسليم النهائي (العميل):' : 'Clean Client Delivery-Ready File:'}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="file" 
+                              onChange={(e) => handleCompileFileUpload(e, 'deliveryReadyFile')}
+                              className="w-full p-1 border border-zinc-300 rounded text-[9px] bg-white cursor-pointer"
+                            />
+                            {compileDeliveryReadyFile && (
+                              <a href={compileDeliveryReadyFile.url} download={compileDeliveryReadyFile.name} className="px-2 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded font-bold hover:bg-indigo-100 shrink-0">
+                                Down
+                              </a>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    ) : (
-                      <div className="p-6 text-center text-zinc-400 text-xs">
-                        No translator has been assigned to this folder. Press "Assign Translator" to assign.
+
+                      {/* Deliverables Checklist */}
+                      <div className="bg-white p-2.5 rounded border border-zinc-200 space-y-1 text-[10px]">
+                        <span className="font-extrabold uppercase block text-zinc-400 text-[8.5px] tracking-wider">
+                          Deliverability Audit Checklist:
+                        </span>
+                        {(() => {
+                          const relevantAsgs = dbInstance.assignments.filter(a => a.taskId === task.id);
+                          const allApproved = relevantAsgs.length > 0 && relevantAsgs.every(a => a.status === 'approved');
+                          const hasCompiled = !!compileFinalFile;
+                          const hasReviewed = !!compileFinalReviewedFile;
+                          const hasDelivery = !!compileDeliveryReadyFile;
+                          
+                          return (
+                            <div className="space-y-1 font-mono">
+                              <div className="flex items-center gap-1.5">
+                                <span className={allApproved ? "text-emerald-600 font-extrabold" : "text-rose-500 font-bold"}>
+                                  {allApproved ? "✓" : "✗"}
+                                </span>
+                                <span>Linguist Approvals: {allApproved ? "All Approved" : "Pending Parts"}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className={hasCompiled ? "text-emerald-600 font-extrabold" : "text-rose-500 font-bold"}>
+                                  {hasCompiled ? "✓" : "✗"}
+                                </span>
+                                <span>Compiled Translated Draft</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className={hasReviewed ? "text-emerald-600 font-extrabold" : "text-rose-500 font-bold"}>
+                                  {hasReviewed ? "✓" : "✗"}
+                                </span>
+                                <span>Reviewed & Polished File</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className={hasDelivery ? "text-emerald-600 font-extrabold" : "text-rose-500 font-bold"}>
+                                  {hasDelivery ? "✓" : "✗"}
+                                </span>
+                                <span>Client Delivery-Ready Version</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
-                    )}
+
+                      {/* Delivery triggers */}
+                      <div>
+                        {(() => {
+                          const relevantAsgs = dbInstance.assignments.filter(a => a.taskId === task.id);
+                          const allApproved = relevantAsgs.length > 0 && relevantAsgs.every(a => a.status === 'approved');
+                          
+                          if (allApproved) {
+                            return (
+                              <button
+                                type="submit"
+                                className="w-full bg-emerald-650 hover:bg-emerald-750 text-white font-extrabold py-2 px-4 rounded cursor-pointer transition-colors shadow-sm text-[10px] uppercase tracking-wide"
+                              >
+                                Mark Ready for Delivery En-route
+                              </button>
+                            );
+                          } else {
+                            return (
+                              <div className="space-y-2">
+                                <div className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded border border-amber-200">
+                                  ⚠️ Cannot deliver normally because some assignments are pending approval. 
+                                  You can force completion by entering an administrative override reason below.
+                                </div>
+                                {showOverrideForm ? (
+                                  <div className="space-y-2">
+                                    <textarea
+                                      required
+                                      value={overrideReason}
+                                      onChange={(e) => setOverrideReason(e.target.value)}
+                                      placeholder="Explain the reason for this administrative bypass (required for audit log)..."
+                                      className="w-full p-1.5 border border-amber-350 rounded focus:ring-1 focus:ring-amber-500 focus:outline-none text-[11px]"
+                                      rows={2}
+                                    />
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="submit"
+                                        className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-extrabold py-1.5 px-3 rounded cursor-pointer transition-colors text-[9px] uppercase"
+                                      >
+                                        Authorize Delivery Override
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowOverrideForm(false)}
+                                        className="px-3 py-1.5 bg-zinc-200 hover:bg-zinc-350 text-zinc-700 rounded text-[9px] font-bold"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowOverrideForm(true)}
+                                    className="w-full bg-amber-500 hover:bg-amber-600 text-white font-extrabold py-2 px-4 rounded cursor-pointer transition-colors shadow-sm text-[10px] uppercase tracking-wide"
+                                  >
+                                    Bypass with Admin Override
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          }
+                        })()}
+                      </div>
+                    </form>
+                  </div>
+                </div>
+
+                {/* Section 3: Linguist & Quality Assurance Assignments Panel */}
+                <div className="bg-zinc-50/50 p-5 rounded-lg border border-zinc-200 space-y-4">
+                  <div className="flex justify-between items-center border-b border-zinc-200 pb-2">
+                    <h4 className="font-bold text-zinc-700 uppercase tracking-wider flex items-center gap-1.5">
+                      👤 {isRtl ? 'إدارة تعيينات المترجمين والمراجعين والتكاليف' : 'Linguist & Quality Assurance Assignments'}
+                    </h4>
+                    <div className="flex gap-2 text-[10px]">
+                      <div>
+                        <label className="mr-1 text-zinc-400 font-bold">Assign Mode:</label>
+                        <select
+                          value={task.assignmentMode || 'single'}
+                          onChange={(e) => {
+                            task.assignmentMode = e.target.value as any;
+                            dbInstance.updateTask(task);
+                            setSelectedTaskForAccDetails({ ...task });
+                          }}
+                          className="bg-white border border-zinc-300 rounded px-1.5 py-0.5 focus:outline-none"
+                        >
+                          <option value="single">Single Translator</option>
+                          <option value="multiple">Multiple Translators</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mr-1 text-zinc-400 font-bold">Review Mode:</label>
+                        <select
+                          value={task.reviewerMode || 'single'}
+                          onChange={(e) => {
+                            task.reviewerMode = e.target.value as any;
+                            dbInstance.updateTask(task);
+                            setSelectedTaskForAccDetails({ ...task });
+                          }}
+                          className="bg-white border border-zinc-300 rounded px-1.5 py-0.5 focus:outline-none"
+                        >
+                          <option value="single">Single Reviewer</option>
+                          <option value="multiple">Multiple Reviewers</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Word count audit indicator */}
+                  {(() => {
+                    const taskAssignments = dbInstance.assignments.filter(a => a.taskId === task.id);
+                    const sumAssignedWords = taskAssignments.filter(a => a.assignmentType === 'translation').reduce((sum, a) => sum + (a.wordCountAssigned || 0), 0);
+                    const isMismatch = task.assignmentMode === 'multiple' && sumAssignedWords !== task.wordCount;
+                    return (
+                      <div className={`p-3 rounded-lg border flex items-center justify-between text-[11px] ${
+                        isMismatch ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-green-50 border-green-200 text-green-800'
+                      }`}>
+                        <div className="space-y-0.5">
+                          <span className="font-extrabold uppercase text-[9px] tracking-wide block">Word Distribution Audit Status:</span>
+                          {isMismatch ? (
+                            <p className="font-medium">
+                              ⚠️ Discrepancy detected: Task volume is <span className="font-bold font-mono">{task.wordCount}</span> words, but the total assigned to translators is <span className="font-bold font-mono">{sumAssignedWords}</span> words (diff: {task.wordCount - sumAssignedWords} words).
+                            </p>
+                          ) : (
+                            <p className="font-medium">
+                              ✓ Word count distribution is perfectly aligned ({task.wordCount} words fully allocated).
+                            </p>
+                          )}
+                        </div>
+                        <div className="text-[10px] font-bold font-mono text-zinc-650 bg-white border border-zinc-200 px-2 py-1 rounded">
+                          Total Assigned: {sumAssignedWords} / {task.wordCount} wds
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Assignments List Table */}
+                  {(() => {
+                    const taskAssignments = dbInstance.assignments.filter(a => a.taskId === task.id);
+                    if (taskAssignments.length === 0) {
+                      return (
+                        <div className="p-6 text-center text-zinc-400 bg-white border border-dashed border-zinc-200 rounded-lg text-[11px]">
+                          No assignments currently registered for this task. Use the form below to allocate parts.
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="border border-zinc-200 rounded-lg overflow-hidden bg-white shadow-2xs">
+                        <table className="w-full text-left text-[11px] border-collapse font-sans">
+                          <thead className="bg-zinc-50 text-zinc-450 border-b border-zinc-200 font-bold uppercase text-[9px]">
+                            <tr>
+                              <th className="p-2.5 pl-4">Linguist</th>
+                              <th className="p-2.5">Type</th>
+                              <th className="p-2.5">Part / Section</th>
+                              <th className="p-2.5">Words/Pages</th>
+                              <th className="p-2.5">Lang Pair</th>
+                              <th className="p-2.5">Deadline</th>
+                              <th className="p-2.5 text-center">Status</th>
+                              <th className="p-2.5 text-right pr-4">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-150">
+                            {taskAssignments.map(asg => {
+                              const linguist = dbInstance.profiles.find(p => p.id === asg.translatorId);
+                              const isRev = asg.assignmentType === 'revision';
+                              const name = linguist ? linguist.fullName : asg.translatorId;
+                              const hasHistory = asg.versionHistory && asg.versionHistory.length > 0;
+                              const isHistoryExpanded = !!expandedAsgHistory[asg.id];
+                              
+                              return (
+                                <React.Fragment key={asg.id}>
+                                  <tr className="hover:bg-zinc-50/50">
+                                    <td className="p-2.5 pl-4 font-bold text-zinc-800">
+                                      {name}
+                                    </td>
+                                    <td className="p-2.5">
+                                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase text-white ${
+                                        isRev ? 'bg-purple-600' : 'bg-indigo-600'
+                                      }`}>
+                                        {isRev ? 'Reviewer' : 'Translator'}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 text-zinc-650 font-mono text-[10px]">
+                                      {asg.assignedPart || 'Entire Document'}
+                                    </td>
+                                    <td className="p-2.5 font-mono text-zinc-700">
+                                      {asg.wordCountAssigned?.toLocaleString()} wds / {asg.pageCountAssigned || 0} pgs
+                                    </td>
+                                    <td className="p-2.5">
+                                      {asg.languagePair || 'Standard'}
+                                    </td>
+                                    <td className="p-2.5 font-mono text-[10px]">
+                                      {asg.deadline ? new Date(asg.deadline).toLocaleString() : '—'}
+                                    </td>
+                                    <td className="p-2.5 text-center">
+                                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border ${
+                                        asg.status === 'approved' ? 'bg-green-50 text-emerald-600 border-emerald-200' :
+                                        asg.status === 'submitted' ? 'bg-indigo-50 text-indigo-600 border-indigo-200 animate-pulse' :
+                                        asg.status === 'returned_for_correction' ? 'bg-red-50 text-rose-600 border-rose-200 font-extrabold' :
+                                        asg.status === 'in_progress' ? 'bg-amber-50 text-amber-600 border-amber-200' :
+                                        'bg-zinc-50 text-zinc-500 border-zinc-200'
+                                      }`}>
+                                        {asg.status.replace('_', ' ')}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 text-right pr-4 space-x-1.5 whitespace-nowrap">
+                                      {hasHistory && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setExpandedAsgHistory(prev => ({ ...prev, [asg.id]: !isHistoryExpanded }))}
+                                          className="text-[9px] font-bold text-zinc-500 hover:text-zinc-900 border border-zinc-200 px-1.5 py-0.5 rounded"
+                                        >
+                                          {isHistoryExpanded ? 'Hide History' : `History (${asg.versionHistory?.length})`}
+                                        </button>
+                                      )}
+
+                                      {/* Verification action buttons for admins */}
+                                      {asg.status === 'submitted' && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const verifiedWordsInput = prompt('Enter verified actual word count for payout:', String(asg.wordCountAssigned || 0));
+                                              if (verifiedWordsInput === null) return;
+                                              const valWords = parseInt(verifiedWordsInput) || 0;
+                                              
+                                              let calculatedAmt = 0;
+                                              if (asg.rateFixed && asg.rateFixed > 0) {
+                                                calculatedAmt = asg.rateFixed;
+                                              } else if (asg.ratePerPage && asg.ratePerPage > 0) {
+                                                calculatedAmt = (asg.pageCountAssigned || 0) * asg.ratePerPage;
+                                              } else {
+                                                calculatedAmt = valWords * (asg.ratePerWord || 0.20);
+                                              }
+
+                                              dbInstance.approveAssignment(asg.id, valWords, asg.ratePerWord, asg.rateFixed, calculatedAmt, asg.ratePerPage, asg.pageCountAssigned);
+                                              
+                                              // Refresh
+                                              const updatedTask = dbInstance.tasks.find(t => t.id === task.id);
+                                              if (updatedTask) setSelectedTaskForAccDetails({ ...updatedTask });
+                                              alert('Assignment counts verified and approved successfully.');
+                                            }}
+                                            className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold text-[9px] transition-colors"
+                                          >
+                                            Approve Part
+                                          </button>
+                                          
+                                          <div className="inline-block relative">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                const currentNotes = correctionNoteMap[asg.id];
+                                                if (currentNotes) {
+                                                  handleReturnForCorrection(asg.id);
+                                                } else {
+                                                  const comment = prompt('Enter feedback/rejection reason for translator:', 'Please review section formatting');
+                                                  if (comment === null) return;
+                                                  setCorrectionNoteMap(prev => ({ ...prev, [asg.id]: comment }));
+                                                  setTimeout(() => {
+                                                    dbInstance.submitReviewAssignment(asg.id, undefined, comment, 'returned_for_correction', comment);
+                                                    const updatedTask = dbInstance.tasks.find(t => t.id === task.id);
+                                                    if (updatedTask) setSelectedTaskForAccDetails({ ...updatedTask });
+                                                    alert('Reverted back to linguist for corrections.');
+                                                  }, 20);
+                                                }
+                                              }}
+                                              className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold text-[9px] transition-colors"
+                                            >
+                                              Return
+                                            </button>
+                                          </div>
+                                        </>
+                                      )}
+
+                                      {/* Download button if attachments exist */}
+                                      {asg.translatedAttachments && asg.translatedAttachments.length > 0 && (
+                                        <div className="inline-flex gap-1">
+                                          {asg.translatedAttachments.map(att => (
+                                            <a
+                                              key={att.id}
+                                              href={att.url}
+                                              download={att.name}
+                                              title={`Download: ${att.name}`}
+                                              className="p-1 hover:bg-zinc-150 border border-zinc-200 rounded text-zinc-650 hover:text-zinc-900 inline-block"
+                                            >
+                                              📥
+                                            </a>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveAssignment(asg.id)}
+                                        className="px-1.5 py-0.5 text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-rose-200 hover:border-rose-300 rounded font-black text-[9px] transition-colors"
+                                      >
+                                        Delete
+                                      </button>
+                                    </td>
+                                  </tr>
+
+                                  {/* Expandable Version History details */}
+                                  {isHistoryExpanded && hasHistory && (
+                                    <tr className="bg-zinc-50/70 border-l-2 border-indigo-400">
+                                      <td colSpan={8} className="p-3 pl-6 text-[10px]">
+                                        <div className="space-y-2">
+                                          <span className="font-extrabold uppercase text-[8.5px] text-zinc-400 block tracking-wider">
+                                            Archive Submission History & Draft Revisions:
+                                          </span>
+                                          <div className="space-y-1.5 font-sans">
+                                            {asg.versionHistory?.map((ver, idx) => (
+                                              <div key={idx} className="flex justify-between items-center bg-white p-2 rounded border border-zinc-150 shadow-3xs">
+                                                <div className="space-y-0.5">
+                                                  <span className="font-bold text-zinc-800">Version {ver.version} • Submitted: {new Date(ver.submittedAt).toLocaleString()}</span>
+                                                  <p className="text-zinc-500">{ver.notes || "No submission comments provided"}</p>
+                                                </div>
+                                                <div className="flex gap-1.5">
+                                                  {ver.files.map(att => (
+                                                    <a
+                                                      key={att.id}
+                                                      href={att.url}
+                                                      download={att.name}
+                                                      className="flex items-center gap-1 bg-zinc-50 hover:bg-zinc-150 border border-zinc-200/80 px-2 py-0.5 rounded text-[9px] font-mono transition-all text-zinc-700"
+                                                    >
+                                                      📥 <span className="truncate max-w-[120px] font-bold">{att.name}</span>
+                                                    </a>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Add New Assignment Form */}
+                  <div className="bg-white p-4 rounded-lg border border-zinc-200 shadow-3xs">
+                    <h5 className="font-black text-zinc-800 uppercase tracking-wide text-[10.5px] mb-3 pb-1 border-b border-zinc-100 flex items-center gap-1">
+                      ➕ Appoint New Assignment Part / Linguist
+                    </h5>
+                    <form onSubmit={handleAddAssignment} className="space-y-3 text-[10px]">
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Specialist</label>
+                          <select
+                            required
+                            value={asgLinguistId}
+                            onChange={(e) => setAsgLinguistId(e.target.value)}
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none text-[11px]"
+                          >
+                            <option value="">-- Choose Linguist --</option>
+                            {translators.map(t => (
+                              <option key={t.id} value={t.id}>
+                                {t.fullName} ({t.role})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Assignment Role</label>
+                          <select
+                            value={asgRole}
+                            onChange={(e) => setAsgRole(e.target.value as any)}
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none text-[11px]"
+                          >
+                            <option value="translation">Translation</option>
+                            <option value="revision">Review / Revision</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Assigned Part Name</label>
+                          <input
+                            type="text"
+                            required
+                            value={asgPart}
+                            onChange={(e) => setAsgPart(e.target.value)}
+                            placeholder="e.g. Section 1 (first 500w)"
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none text-[11px]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Language Pair</label>
+                          <input
+                            type="text"
+                            required
+                            value={asgLangPair}
+                            onChange={(e) => setAsgLangPair(e.target.value)}
+                            placeholder="e.g. English to Arabic"
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none text-[11px]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Assigned Word Count</label>
+                          <input
+                            type="number"
+                            required
+                            value={asgWords}
+                            onChange={(e) => {
+                              const valStr = e.target.value;
+                              setAsgWords(valStr);
+                              const val = parseInt(valStr) || 0;
+                              setAsgPages(Math.ceil(val / 250).toString());
+                            }}
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none font-mono text-[11px]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Assigned Pages</label>
+                          <input
+                            type="number"
+                            required
+                            value={asgPages}
+                            onChange={(e) => setAsgPages(e.target.value)}
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none font-mono text-[11px]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Part Deadline</label>
+                          <input
+                            type="datetime-local"
+                            required
+                            value={asgDeadline}
+                            onChange={(e) => setAsgDeadline(e.target.value)}
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none font-mono text-[11px]"
+                          />
+                        </div>
+
+                        {asgRole === 'revision' && (
+                          <div>
+                            <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Link to Translation Part</label>
+                            <select
+                              value={asgRelatedAssignmentId}
+                              onChange={(e) => setAsgRelatedAssignmentId(e.target.value)}
+                              className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none bg-amber-50 text-[11px]"
+                            >
+                              <option value="">-- No Translator Link --</option>
+                              {dbInstance.assignments
+                                .filter(a => a.taskId === task.id && a.assignmentType === 'translation')
+                                .map(a => {
+                                  const translatorName = dbInstance.profiles.find(p => p.id === a.translatorId)?.fullName || a.translatorId;
+                                  return (
+                                    <option key={a.id} value={a.id}>
+                                      {translatorName} ({a.assignedPart || 'Entire File'})
+                                    </option>
+                                  );
+                                })}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Rate settings */}
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-zinc-50 p-3 rounded border border-zinc-150">
+                        <div>
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Rate Pricing Scheme</label>
+                          <select
+                            value={asgRateType}
+                            onChange={(e) => setAsgRateType(e.target.value as any)}
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none bg-white text-[11px]"
+                          >
+                            <option value="word">Rate Per Word</option>
+                            <option value="page">Rate Per Page</option>
+                            <option value="fixed">Fixed Lump Sum</option>
+                          </select>
+                        </div>
+
+                        {asgRateType === 'word' && (
+                          <div>
+                            <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Rate Per Word (EGP)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={asgRateWords}
+                              onChange={(e) => setAsgRateWords(e.target.value)}
+                              className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none font-mono bg-white text-[11px]"
+                            />
+                          </div>
+                        )}
+
+                        {asgRateType === 'page' && (
+                          <div>
+                            <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Rate Per Page (EGP)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={asgRatePage}
+                              onChange={(e) => setAsgRatePage(e.target.value)}
+                              className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none font-mono bg-white text-[11px]"
+                            />
+                          </div>
+                        )}
+
+                        {asgRateType === 'fixed' && (
+                          <div>
+                            <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Fixed Cost Amount (EGP)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={asgRateFixed}
+                              onChange={(e) => setAsgRateFixed(e.target.value)}
+                              className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none font-mono bg-white text-[11px]"
+                            />
+                          </div>
+                        )}
+
+                        <div className="md:col-span-2">
+                          <label className="block text-[9.5px] uppercase text-zinc-400 font-bold mb-1">Allocation / Notes</label>
+                          <input
+                            type="text"
+                            value={asgNotes}
+                            onChange={(e) => setAsgNotes(e.target.value)}
+                            placeholder="e.g. Translate pages 1 to 5"
+                            className="w-full p-1.5 border border-zinc-300 rounded focus:ring-1 focus:ring-zinc-900 focus:outline-none bg-white text-[11px]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          className="bg-zinc-900 hover:bg-zinc-800 text-white font-extrabold py-2 px-6 rounded cursor-pointer transition-colors uppercase tracking-wider text-[9.5px]"
+                        >
+                          Appoint Assignment Part
+                        </button>
+                      </div>
+                    </form>
                   </div>
                 </div>
 

@@ -1533,11 +1533,27 @@ export class GTMSDatabase {
     return newAsg;
   }
 
-  submitAssignment(assignmentId: string, wordCountActual?: number, translatedAttachments?: TaskAttachment[]) {
+  submitAssignment(assignmentId: string, wordCountActual?: number, translatedAttachments?: TaskAttachment[], notes?: string) {
     const asg = this.assignments.find(a => a.id === assignmentId);
     if (asg) {
+      // 1. Maintain version history
+      if (!asg.versionHistory) {
+        asg.versionHistory = [];
+      }
+      if (asg.submittedAt && asg.translatedAttachments && asg.translatedAttachments.length > 0) {
+        asg.versionHistory.push({
+          version: asg.versionHistory.length + 1,
+          files: asg.translatedAttachments,
+          submittedAt: asg.submittedAt,
+          notes: asg.notes || ''
+        });
+      }
+
       asg.status = 'submitted';
       asg.submittedAt = new Date().toISOString();
+      if (notes !== undefined) {
+        asg.notes = notes;
+      }
       if (translatedAttachments) {
         asg.translatedAttachments = translatedAttachments;
       }
@@ -1574,31 +1590,21 @@ export class GTMSDatabase {
 
       // Notify managers / Admins
       const adminsAndOwners = this.profiles.filter(p => p.role === 'admin' || p.role === 'owner');
-      if (adminsAndOwners.length > 0) {
-        adminsAndOwners.forEach(p => {
-          this.addNotification({
-            title: 'Task File Submitted',
-            titleAr: 'تم تسليم ملف مترجم',
-            message: `Translator submitted translation for file: ${asg.taskFileName || 'File'}. Ready for revision!`,
-            messageAr: `قام المترجم بتسليم الملف المترجم: ${asg.taskFileName || 'ملف'}. جاهز للمراجعة!`,
-            userId: p.id,
-            type: 'warning'
-          });
-        });
-      } else {
+      adminsAndOwners.forEach(p => {
         this.addNotification({
           title: 'Task File Submitted',
           titleAr: 'تم تسليم ملف مترجم',
           message: `Translator submitted translation for file: ${asg.taskFileName || 'File'}. Ready for revision!`,
           messageAr: `قام المترجم بتسليم الملف المترجم: ${asg.taskFileName || 'ملف'}. جاهز للمراجعة!`,
-          userId: 'system',
+          userId: p.id,
           type: 'warning'
         });
-      }
+      });
 
       // Hand-off notification directly to any linked reviewer!
-      const revAsgs = this.assignments.filter(a => a.taskId === asg.taskId && (a.assignmentType === 'revision' || a.assignmentType === 'proofreading') && a.translatorId !== asg.translatorId);
-      revAsgs.forEach(revAsg => {
+      const revAsgs = this.assignments.filter(a => a.taskId === asg.taskId && (a.assignmentType === 'revision' || a.assignmentType === 'proofreading'));
+      const relevantReviewers = revAsgs.filter(a => a.relatedAssignmentId === asg.id || !a.relatedAssignmentId);
+      relevantReviewers.forEach(revAsg => {
         this.addNotification({
           title: 'Translation Ready for Revision',
           titleAr: 'الترجمة جاهزة للمراجعة اللغوية',
@@ -1609,6 +1615,114 @@ export class GTMSDatabase {
         });
       });
     }
+  }
+
+  submitReviewAssignment(
+    assignmentId: string,
+    reviewedFiles?: TaskAttachment[],
+    comments?: string,
+    status?: 'submitted' | 'returned_for_correction' | 'approved',
+    correctionNotes?: string
+  ) {
+    const asg = this.assignments.find(a => a.id === assignmentId);
+    if (!asg) return;
+
+    // Maintain version history
+    if (!asg.versionHistory) {
+      asg.versionHistory = [];
+    }
+    if (asg.submittedAt && asg.translatedAttachments && asg.translatedAttachments.length > 0) {
+      asg.versionHistory.push({
+        version: asg.versionHistory.length + 1,
+        files: asg.translatedAttachments,
+        submittedAt: asg.submittedAt,
+        notes: asg.reviewerComments || ''
+      });
+    }
+
+    if (status) asg.status = status;
+    asg.submittedAt = new Date().toISOString();
+    if (comments) asg.reviewerComments = comments;
+    if (correctionNotes) asg.correctionNotes = correctionNotes;
+    if (reviewedFiles) asg.translatedAttachments = reviewedFiles;
+
+    const task = this.tasks.find(t => t.id === asg.taskId);
+
+    if (status === 'returned_for_correction') {
+      // Find related translator assignment and set its status to returned_for_correction
+      if (asg.relatedAssignmentId) {
+        const transAsg = this.assignments.find(a => a.id === asg.relatedAssignmentId);
+        if (transAsg) {
+          transAsg.status = 'returned_for_correction';
+          transAsg.correctionNotes = correctionNotes;
+          transAsg.reviewerComments = comments;
+
+          // Notify translator
+          this.addNotification({
+            title: 'Translation Returned for Correction',
+            titleAr: 'إعادة ملف الترجمة للتصحيح',
+            message: `Your translation part for task ${asg.taskRef || ''} has been returned for correction. Notes: ${correctionNotes || ''}`,
+            messageAr: `تم إعادة قسم الترجمة الخاص بك للمهمة ${asg.taskRef || ''} للتصحيح والتعديل. الملاحظات: ${correctionNotes || ''}`,
+            userId: transAsg.translatorId,
+            type: 'danger'
+          });
+        }
+      }
+
+      // Notify managers
+      const adminsAndOwners = this.profiles.filter(p => p.role === 'admin' || p.role === 'owner');
+      adminsAndOwners.forEach(p => {
+        this.addNotification({
+          title: 'Review Returned for Correction',
+          titleAr: 'تم إرجاع ملف للمراجعة والتصحيح',
+          message: `Reviewer returned part of task ${asg.taskRef || ''} for correction.`,
+          messageAr: `قام المراجع بإرجاع جزء من المهمة ${asg.taskRef || ''} للتصحيح.`,
+          userId: p.id,
+          type: 'warning'
+        });
+      });
+    } else if (status === 'approved') {
+      // Approve this reviewer assignment
+      this.approveAssignment(asg.id);
+
+      // If there is a linked translator assignment, approve it too
+      if (asg.relatedAssignmentId) {
+        this.approveAssignment(asg.relatedAssignmentId);
+      }
+    } else {
+      // General submission
+      if (task) {
+        task.status = 'review';
+        if (reviewedFiles && reviewedFiles.length > 0) {
+          if (!task.attachments) task.attachments = [];
+          reviewedFiles.forEach(att => {
+            const alreadyExists = task.attachments?.some(existing => existing.id === att.id || existing.name === att.name);
+            if (!alreadyExists) {
+              task.attachments?.push({
+                ...att,
+                name: `[REV] ${att.name}`
+              });
+            }
+          });
+        }
+        this.updateTask(task);
+      }
+
+      // Notify managers
+      const adminsAndOwners = this.profiles.filter(p => p.role === 'admin' || p.role === 'owner');
+      adminsAndOwners.forEach(p => {
+        this.addNotification({
+          title: 'Review File Submitted',
+          titleAr: 'تم تسليم ملف مراجعة',
+          message: `Reviewer submitted review for file: ${asg.taskFileName || 'File'}.`,
+          messageAr: `قام المراجع بتسليم ملف مراجعة للمستند: ${asg.taskFileName || 'ملف'}.`,
+          userId: p.id,
+          type: 'info'
+        });
+      });
+    }
+
+    this.save();
   }
 
   approveAssignment(assignmentId: string, verifiedWordCount?: number, verifiedRatePerWord?: number, verifiedRateFixed?: number, verifiedCalculatedAmount?: number, verifiedRatePerPage?: number, verifiedPageCount?: number) {
@@ -1658,6 +1772,43 @@ export class GTMSDatabase {
           task.status = 'completed';
         }
         this.updateTask(task);
+
+        // Check if all translation parts are approved
+        const allTransApproved = transAsgs.length > 0 && transAsgs.every(a => a.status === 'approved');
+        if (allTransApproved) {
+          this.addNotification({
+            title: 'All Translation Parts Completed',
+            titleAr: 'اكتملت جميع أقسام الترجمة',
+            message: `All translation parts for task ${task.referenceNo} have been completed and approved.`,
+            messageAr: `تم إكمال واعتماد جميع أقسام الترجمة للمهمة ${task.referenceNo}.`,
+            userId: 'system',
+            type: 'success'
+          });
+        }
+
+        // Check if all reviewer parts are approved
+        const allRevApproved = revAndPfAsgs.length > 0 && revAndPfAsgs.every(a => a.status === 'approved');
+        if (allRevApproved) {
+          this.addNotification({
+            title: 'All Reviewer Parts Completed',
+            titleAr: 'اكتملت جميع عمليات المراجعة والتدقيق',
+            message: `All revision parts for task ${task.referenceNo} have been completed and approved.`,
+            messageAr: `تم إكمال واعتماد جميع عمليات المراجعة للمهمة ${task.referenceNo}.`,
+            userId: 'system',
+            type: 'success'
+          });
+        }
+
+        if (allApproved) {
+          this.addNotification({
+            title: 'Task Ready for Final Delivery',
+            titleAr: 'المهمة جاهزة للتسليم النهائي',
+            message: `All assignments for task ${task.referenceNo} are completed. Ready for final delivery!`,
+            messageAr: `تم إنجاز كافة المهام للملف المرجعي ${task.referenceNo}. جاهز للتسليم النهائي!`,
+            userId: 'system',
+            type: 'success'
+          });
+        }
       }
 
       // Financial Accrual: Create a pending freelancer operating expense and perform double ledger entries automatically
@@ -1668,7 +1819,7 @@ export class GTMSDatabase {
         this.addExpense({
           vendor: translatorName,
           category: 'freelancer',
-          description: `Translator cost for assignment ${asg.id} (Task: ${task?.referenceNo || asg.taskId})`,
+          description: `${asg.assignmentType === 'translation' ? 'Translator' : 'Reviewer'} cost for assignment ${asg.id} (Task: ${task?.referenceNo || asg.taskId})`,
           amount: asg.calculatedAmount,
           currency: 'EGP',
           dueDate: asg.deadline || undefined,
@@ -1679,6 +1830,71 @@ export class GTMSDatabase {
 
       this.save();
     }
+  }
+
+  updateAssignmentDeadline(assignmentId: string, newDeadline: string) {
+    const asg = this.assignments.find(a => a.id === assignmentId);
+    if (asg) {
+      const oldDeadline = asg.deadline;
+      asg.deadline = newDeadline;
+      this.save();
+
+      // Notify translator of deadline update
+      this.addNotification({
+        title: 'Assignment Deadline Updated',
+        titleAr: 'تحديث الموعد النهائي للمهمة',
+        message: `Your assignment deadline for task ${asg.taskRef || ''} has been updated from ${oldDeadline || 'N/A'} to ${newDeadline}`,
+        messageAr: `تم تحديث الموعد النهائي للمهمة ${asg.taskRef || ''} من ${oldDeadline || 'لا يوجد'} إلى ${newDeadline}`,
+        userId: asg.translatorId,
+        type: 'warning'
+      });
+    }
+  }
+
+  markTaskReadyForDelivery(
+    taskId: string,
+    overrideReason?: string,
+    compileAttachments?: { finalFile?: TaskAttachment, finalReviewedFile?: TaskAttachment, deliveryReadyFile?: TaskAttachment }
+  ): boolean {
+    const task = this.tasks.find(t => t.id === taskId);
+    if (!task) return false;
+
+    const relevantAsgs = this.assignments.filter(a => a.taskId === taskId);
+    const allApproved = relevantAsgs.length > 0 && relevantAsgs.every(a => a.status === 'approved');
+
+    if (!allApproved && !overrideReason) {
+      return false;
+    }
+
+    if (overrideReason) {
+      task.adminOverrideReadyForDelivery = true;
+      task.adminOverrideReason = overrideReason;
+    }
+
+    if (compileAttachments) {
+      if (compileAttachments.finalFile) task.finalFile = compileAttachments.finalFile;
+      if (compileAttachments.finalReviewedFile) task.finalReviewedFile = compileAttachments.finalReviewedFile;
+      if (compileAttachments.deliveryReadyFile) task.deliveryReadyFile = compileAttachments.deliveryReadyFile;
+    }
+
+    task.status = 'completed';
+    this.updateTask(task);
+
+    // Notify admins
+    const adminsAndOwners = this.profiles.filter(p => p.role === 'admin' || p.role === 'owner');
+    adminsAndOwners.forEach(p => {
+      this.addNotification({
+        title: 'Task Marked Ready for Delivery',
+        titleAr: 'تم تعيين المهمة كجاهزة للتسليم',
+        message: `Task ${task.referenceNo} has been marked ready for delivery.${overrideReason ? ' (Bypassed with override)' : ''}`,
+        messageAr: `تم تعيين المهمة ${task.referenceNo} كجاهزة للتسليم.${overrideReason ? ' (تم التجاوز والاعتماد اليدوي)' : ''}`,
+        userId: p.id,
+        type: 'success'
+      });
+    });
+
+    this.save();
+    return true;
   }
 
   declineAssignment(assignmentId: string, declineNotes?: string) {

@@ -147,6 +147,15 @@ export interface Task {
   sourceFileVersions?: { version: number; url: string; name: string; uploadedBy: string; uploadedAt: string }[];
   targetFileVersions?: { version: number; url: string; name: string; uploadedBy: string; uploadedAt: string }[];
   
+  // Multi-Linguist Assignment and compilation extensions
+  assignmentMode?: 'single' | 'multiple';
+  reviewerMode?: 'single' | 'multiple';
+  finalFile?: TaskAttachment;
+  finalReviewedFile?: TaskAttachment;
+  deliveryReadyFile?: TaskAttachment;
+  adminOverrideReadyForDelivery?: boolean;
+  adminOverrideReason?: string;
+
   notes?: string;
   createdBy: string;
   createdAt: string;
@@ -185,10 +194,25 @@ export interface TaskAssignment {
   deadline?: string;
   submittedAt?: string;
   translatedAttachments?: TaskAttachment[];
-  status: 'assigned' | 'in_progress' | 'submitted' | 'approved';
+  status: 'assigned' | 'in_progress' | 'submitted' | 'approved' | 'returned_for_correction';
   notes?: string;
   assignedBy: string;
   assignedAt: string;
+
+  // Multi-translator / Multi-reviewer and Cost Accounting Extensions
+  assignedPart?: string; // Name of file/section
+  languagePair?: string;
+  urgency?: 'low' | 'medium' | 'high' | 'urgent';
+  finalApprovedAmount?: number;
+  relatedAssignmentId?: string; // Links reviewer to specific translator assignment ID
+  reviewerComments?: string;
+  correctionNotes?: string;
+  versionHistory?: Array<{
+    version: number;
+    files: TaskAttachment[];
+    submittedAt: string;
+    notes?: string;
+  }>;
 }
 
 export type QuotationStatus = 'created' | 'sent' | 'viewed' | 'confirmed' | 'cancelled' | 'expired' | 'converted';

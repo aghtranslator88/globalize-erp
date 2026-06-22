@@ -35,9 +35,13 @@ export const DashboardTranslator: React.FC<DashboardTranslatorProps> = ({
   const [decliningAsgId, setDecliningAsgId] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState('');
 
-  // States for uploading translated documents on submission
-  const [dragActive, setDragActive] = useState(false);
   const [translatedAttachments, setTranslatedAttachments] = useState<TaskAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+
+  // Submission & Review states
+  const [submitNotes, setSubmitNotes] = useState('');
+  const [reviewActionType, setReviewActionType] = useState<'approve' | 'return' | 'submit'>('submit');
+  const [correctionNotes, setCorrectionNotes] = useState('');
 
   // States for Monthly Statement preparation and exporter
   const currentYear = new Date().getFullYear();
@@ -143,16 +147,49 @@ export const DashboardTranslator: React.FC<DashboardTranslatorProps> = ({
 
   const handleConfirmSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (translatedAttachments.length === 0) {
-      warning(isRtl ? '⚠️ يرجى إدخال وإرفاق الملف المترجم النهائي أولاً!' : '⚠️ Please select or drop the final translated document before submitting.');
-      return;
-    }
     if (selectedAsgId) {
-      dbInstance.submitAssignment(selectedAsgId, actualWords, translatedAttachments);
+      const asg = dbInstance.assignments.find(a => a.id === selectedAsgId);
+      if (!asg) return;
+
+      const isRevision = asg.assignmentType === 'revision' || asg.assignmentType === 'proofreading';
+
+      if (!isRevision || reviewActionType === 'submit') {
+        if (translatedAttachments.length === 0) {
+          warning(isRtl ? '⚠️ يرجى إدخال وإرفاق الملف النهائي أولاً!' : '⚠️ Please select or drop the final document before submitting.');
+          return;
+        }
+      }
+
+      if (isRevision) {
+        if (reviewActionType === 'approve') {
+          dbInstance.submitReviewAssignment(selectedAsgId, undefined, submitNotes, 'approved');
+          success(isRtl ? '🎉 تم اعتماد الموافقة بنجاح!' : '🎉 Revision approved and verified successfully!');
+        } else if (reviewActionType === 'return') {
+          if (!correctionNotes) {
+            warning(isRtl ? '⚠️ يرجى كتابة ملاحظات التعديل المطلوبة للمترجم!' : '⚠️ Please input the required correction notes for the translator.');
+            return;
+          }
+          dbInstance.submitReviewAssignment(selectedAsgId, undefined, submitNotes, 'returned_for_correction', correctionNotes);
+          success(isRtl ? '⚠️ تم إعادة الملف للمترجم للتعديل والمراجعة.' : '⚠️ Task draft returned to translator for corrections.');
+        } else {
+          dbInstance.submitReviewAssignment(selectedAsgId, translatedAttachments, submitNotes, 'submitted');
+          success(isRtl ? '🎉 تم تسليم مسودة المراجعة بنجاح!' : '🎉 Reviewed draft submitted successfully!');
+        }
+      } else {
+        dbInstance.submitAssignment(selectedAsgId, actualWords, translatedAttachments, submitNotes);
+        success(isRtl ? '🎉 تم تسليم الترجمة بنجاح وتسجيل الحسابات!' : '🎉 Translated document uploaded and job completed successfully!');
+      }
+
       setIsSubmitModalOpen(false);
       setSelectedAsgId(null);
       setTranslatedAttachments([]);
-      success(isRtl ? '🎉 تم رفع الترجمة بنجاح وتسجيل الموعد والحسابات!' : '🎉 Translated document uploaded and job completed successfully!');
+      setSubmitNotes('');
+      setCorrectionNotes('');
+      setReviewActionType('submit');
+      
+      // Update local assignment list immediately
+      const filterOwn = dbInstance.assignments.filter(a => a.translatorId === dbInstance.activeProfile.id);
+      setAssignments(filterOwn);
     }
   };
 
@@ -748,21 +785,41 @@ export const DashboardTranslator: React.FC<DashboardTranslatorProps> = ({
                           asg.status === 'assigned' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' :
                           asg.status === 'in_progress' ? 'bg-amber-50 text-amber-700 border-amber-100' :
                           asg.status === 'submitted' ? 'bg-blue-50 text-blue-700 border-blue-100 animate-pulse' :
+                          asg.status === 'returned_for_correction' ? 'bg-red-50 text-red-700 border-red-200 font-extrabold animate-bounce' :
                           'bg-emerald-50 text-emerald-700 border-emerald-100'
                         }`}>
-                          {asg.status === 'assigned' ? (isRtl ? 'بانتظار القبول' : 'Awaiting Consent') : isRtl ? (asg.status === 'in_progress' ? 'قيد العمل' : asg.status === 'submitted' ? 'تم التسليم للمراجعة' : 'مقبول ومعتمد') : asg.status.replace('_', ' ')}
+                          {asg.status === 'assigned' ? (isRtl ? 'بانتظار القبول' : 'Awaiting Consent') : 
+                           asg.status === 'returned_for_correction' ? (isRtl ? 'إرجاع للتصحيح' : 'Returned for Correction') :
+                           isRtl ? (asg.status === 'in_progress' ? 'قيد العمل' : asg.status === 'submitted' ? 'تم التسليم للمراجعة' : 'مقبول ومعتمد') : asg.status.replace('_', ' ')}
                         </span>
                       )}
                     </div>
                   </div>
+
+                  {/* Correction Notes Banner */}
+                  {asg.status === 'returned_for_correction' && (
+                    <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs space-y-1 animate-pulse">
+                      <span className="font-extrabold block uppercase tracking-wider text-[10px]">
+                        ⚠️ {isRtl ? 'إعادة لتصحيح وتعديل الترجمة (ملاحظات المراجع):' : 'Returned for Correction (Reviewer Comments):'}
+                      </span>
+                      <p className="font-medium text-[11px] leading-relaxed">
+                        {asg.correctionNotes || asg.reviewerComments || (isRtl ? 'يرجى مراجعة وتعديل الملف المترجم حسب الملاحظات اللغوية.' : 'Please revise and update the translation draft as suggested.')}
+                      </p>
+                    </div>
+                  )}
 
                   {/* Comprehensive Task Details Display prior to acceptance */}
                   <div className="p-3 bg-white rounded-lg border border-slate-100 text-xs text-slate-650 grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="space-y-1.5">
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">{isRtl ? 'تفاصيل اللغة والكلمات' : 'Scope & Language Pair'}</p>
                       <div className="font-semibold text-slate-800">
-                        {parentTask ? `${parentTask.sourceLanguage} ➔ ${parentTask.targetLanguage}` : 'N/A'}
+                        {asg.languagePair || (parentTask ? `${parentTask.sourceLanguage} ➔ ${parentTask.targetLanguage}` : 'N/A')}
                       </div>
+                      {asg.assignedPart && (
+                        <div className="text-[11px] font-semibold text-indigo-750">
+                          {isRtl ? 'القسم المكلف:' : 'Assigned Section/Part:'} <span className="font-mono text-zinc-700 font-bold">{asg.assignedPart}</span>
+                        </div>
+                      )}
                       <div className="text-[11px]">
                         {isRtl ? 'عدد الكلمات المخصصة: ' : 'Assigned Words: ' }
                         <strong className="text-indigo-650 font-bold font-mono">{asg.wordCountAssigned.toLocaleString()}</strong>
@@ -1016,113 +1073,227 @@ export const DashboardTranslator: React.FC<DashboardTranslatorProps> = ({
       )}
 
       {/* SUBMIT WORK COUNT POPUP MODAL */}
-      {isSubmitModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 animate-fade-in font-sans">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-5 shadow-2xl border border-slate-100 text-slate-750">
-            <h4 className="font-extrabold text-slate-900 text-sm border-b border-slate-100 pb-2">
-              {isRtl ? 'تأكيد إكمال المهمة وعدد كلمات الهدف' : 'Complete Job: Confirm Target Word Count'}
-            </h4>
-            <p className="text-[11px] text-slate-400 leading-normal mt-2">
-              {isRtl 
-                ? 'يرجى إدخال عدد الكلمات النهائي للملف المترجم (كلمات الهدف). سيتم مراجعة هذه الحسابات وتدقيقها من قبل المحاسب والمدير المالي.'
-                : 'Please input the final target word count of the translated document. This count drives verified freelance fees and staff overage balances.'}
-            </p>
+      {/* SUBMIT WORK COUNT POPUP MODAL */}
+      {isSubmitModalOpen && (() => {
+        const currentAsg = selectedAsgId ? dbInstance.assignments.find(a => a.id === selectedAsgId) : null;
+        if (!currentAsg) return null;
 
-             <form onSubmit={handleConfirmSubmit} className="mt-4 space-y-4">
-              <div>
-                <label className="text-[10px] font-black uppercase text-slate-500 tracking-wide block">
-                  {isRtl ? 'عدد كلمات الملف الهدف المترجم' : 'Finished Target Word Count'}
-                </label>
-                <input 
-                  type="number" 
-                  value={actualWords || ''} 
-                  onChange={e => setActualWords(Math.max(0, parseInt(e.target.value) || 0))}
-                  className="w-full mt-1.5 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono text-center focus:ring-1 focus:ring-indigo-600 focus:outline-none"
-                  required
-                />
-              </div>
+        const isRevision = currentAsg.assignmentType === 'revision' || currentAsg.assignmentType === 'proofreading';
+        
+        // Resolve linked translation details
+        const linkedAsg = currentAsg.relatedAssignmentId ? dbInstance.assignments.find(a => a.id === currentAsg.relatedAssignmentId) : null;
+        const linkedTranslator = linkedAsg ? dbInstance.profiles.find(p => p.id === linkedAsg.translatorId) : null;
 
-              {/* Drag-and-Drop Area */}
-              <div>
-                <label className="text-[10px] font-black uppercase text-slate-500 tracking-wide block">
-                  {isRtl ? 'رفع المستند المترجم النهائي (ملفات الترجمة):' : 'Upload Final Translated Documents:'}
-                </label>
-                
-                <div 
-                  onDragEnter={handleDragSubmit}
-                  onDragOver={handleDragSubmit}
-                  onDragLeave={handleDragSubmit}
-                  onDrop={handleDropSubmit}
-                  className={`mt-2 p-4 rounded-xl border-2 border-dashed text-center transition-all relative ${
-                    dragActive 
-                      ? 'border-indigo-600 bg-indigo-50/50' 
-                      : 'border-slate-200 hover:border-slate-350 bg-slate-50/50'
-                  }`}
-                >
-                  <input 
-                    type="file" 
-                    multiple 
-                    onChange={handleFileChangeSubmit}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    id="file-translator-submit"
-                  />
-                  <div className="flex flex-col items-center justify-center gap-1.5 pointer-events-none">
-                    <FileUp size={22} className={`${dragActive ? 'text-indigo-600 animate-bounce' : 'text-slate-400'}`} />
-                    <span className="text-[11px] font-bold text-slate-700">
-                      {isRtl ? 'اسحب وأفلت الملفات هنا أو انقر للتصفح' : 'Drag & drop files here, or click to browse'}
-                    </span>
-                    <span className="text-[9px] text-slate-400">
-                      {isRtl ? 'صيغ المدعومة: DOCX, PDF, XLSX, TXT إلخ.' : 'Supported formats: DOCX, PDF, XLSX, TXT etc.'}
-                    </span>
+        return (
+          <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4 animate-fade-in font-sans">
+            <div className="bg-white rounded-2xl w-full max-w-md p-5 shadow-2xl border border-slate-100 text-slate-750 flex flex-col max-h-[90vh] overflow-y-auto">
+              <h4 className="font-extrabold text-slate-900 text-sm border-b border-slate-100 pb-2">
+                {isRevision 
+                  ? (isRtl ? 'اتخاذ إجراء بشأن مراجعة الترجمة' : 'Review Workflow: Action Submission') 
+                  : (isRtl ? 'تأكيد إكمال المهمة وعدد كلمات الهدف' : 'Complete Job: Confirm Target Word Count')}
+              </h4>
+
+              {/* Revision reference translator draft card */}
+              {isRevision && linkedAsg && (
+                <div className="mt-3 p-3 bg-zinc-50 border border-zinc-200 rounded-lg text-xs space-y-2">
+                  <span className="font-extrabold uppercase text-[8.5px] text-zinc-400 block tracking-wider">
+                    Reference Translator Submission:
+                  </span>
+                  <div className="grid grid-cols-2 gap-2 text-[10.5px]">
+                    <div>
+                      <span className="text-zinc-400 block">Translator:</span>
+                      <span className="font-bold text-zinc-800">{linkedTranslator?.fullName || linkedAsg.translatorId}</span>
+                    </div>
+                    <div>
+                      <span className="text-zinc-400 block">Assigned Section:</span>
+                      <span className="font-mono text-zinc-800">{linkedAsg.assignedPart || 'Entire File'}</span>
+                    </div>
                   </div>
-                </div>
-
-                {/* List of pending attachments inside modal */}
-                {translatedAttachments.length > 0 && (
-                  <div className="mt-3 space-y-1.5 max-h-[140px] overflow-y-auto">
-                    <span className="text-[9px] font-black uppercase text-indigo-600 block">
-                      📁 {isRtl ? 'الملفات المحددة المرفقة بالترجمة:' : 'Selected Translation Files:'}
-                    </span>
-                    {translatedAttachments.map(att => (
-                      <div key={att.id} className="flex items-center justify-between p-1.5 bg-indigo-50/50 border border-indigo-100 rounded text-[11px]">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <FileText size={12} className="text-indigo-500 shrink-0" />
-                          <span className="truncate max-w-[190px] font-semibold text-slate-700">{att.name}</span>
-                          <span className="text-[9px] text-zinc-405 font-mono">({(att.size / 1024).toFixed(0)} KB)</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteSubmitAttachment(att.id)}
-                          className="text-red-500 hover:text-red-700 p-0.5"
-                          title={isRtl ? 'حذف الملف' : 'Delete file'}
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                  <div>
+                    <span className="text-zinc-400 block text-[10px]">Translator Notes:</span>
+                    <p className="italic text-zinc-650 bg-white p-1.5 rounded border border-zinc-150 text-[10.5px]">
+                      {linkedAsg.notes || "No comments left by translator."}
+                    </p>
+                  </div>
+                  {linkedAsg.translatedAttachments && linkedAsg.translatedAttachments.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="text-zinc-400 block text-[10px]">Download Translation Draft:</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {linkedAsg.translatedAttachments.map(att => (
+                          <a
+                            key={att.id}
+                            href={att.url}
+                            download={att.name}
+                            className="inline-flex items-center gap-1.5 bg-white hover:bg-zinc-150 border border-zinc-200 px-2 py-0.5 rounded text-[10px] text-zinc-700 font-bold"
+                          >
+                            📥 <span className="truncate max-w-[150px]">{att.name}</span>
+                          </a>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <form onSubmit={handleConfirmSubmit} className="mt-4 space-y-4 text-xs">
+                {isRevision ? (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-wide block mb-1.5">
+                      {isRtl ? 'نوع إجراء المراجعة' : 'Review Action Type'}
+                    </label>
+                    <select
+                      value={reviewActionType}
+                      onChange={(e) => setReviewActionType(e.target.value as any)}
+                      className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-1 focus:ring-indigo-600 focus:outline-none"
+                    >
+                      <option value="submit">Submit Reviewed & Revised Draft</option>
+                      <option value="approve">Approve & Signoff (Approve Translator Part)</option>
+                      <option value="return">Return to Translator for Correction</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-wide block">
+                      {isRtl ? 'عدد كلمات الملف الهدف المترجم' : 'Finished Target Word Count'}
+                    </label>
+                    <input 
+                      type="number" 
+                      value={actualWords || ''} 
+                      onChange={e => setActualWords(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full mt-1.5 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold font-mono text-center focus:ring-1 focus:ring-indigo-600 focus:outline-none"
+                      required
+                    />
                   </div>
                 )}
-              </div>
 
-              <div className="flex gap-2 justify-end pt-3">
-                <button
-                  type="button"
-                  onClick={() => { setIsSubmitModalOpen(false); setSelectedAsgId(null); setTranslatedAttachments([]); }}
-                  className="px-3 py-1.5 text-xs font-bold text-slate-500 bg-slate-100 rounded-lg hover:bg-slate-200 cursor-pointer"
-                >
-                  {isRtl ? 'إلغاء' : 'Cancel'}
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg cursor-pointer animate-pulse"
-                >
-                  {isRtl ? 'تأكيد وإرسال للمراجعة والتدقيق' : 'Mark Completed & Submit'}
-                </button>
-              </div>
-            </form>
+                {/* Return for Correction: notes prompt */}
+                {isRevision && reviewActionType === 'return' && (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-rose-500 tracking-wide block mb-1">
+                      {isRtl ? 'تعليمات وملاحظات التصحيح والتعديل (ستظهر للمترجم):' : 'Correction Notes for Translator (Required):'}
+                    </label>
+                    <textarea
+                      required
+                      value={correctionNotes}
+                      onChange={(e) => setCorrectionNotes(e.target.value)}
+                      placeholder={isRtl ? "مثال: يرجى تصحيح ترجمة العناوين في صفحة ٢..." : "E.g. Please revise section titles and align the bullet layout in page 2..."}
+                      className="w-full p-2 bg-slate-50 border border-rose-300 rounded-lg text-xs focus:ring-1 focus:ring-rose-505 focus:outline-none text-slate-800"
+                      rows={3}
+                    />
+                  </div>
+                )}
+
+                {/* Upload Section: only shown for translators, or reviewers uploading a reviewed draft */}
+                {(!isRevision || reviewActionType === 'submit') && (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-wide block">
+                      {isRtl ? 'رفع المستند النهائي المسلم:' : 'Upload Final Documents:'}
+                    </label>
+                    
+                    <div 
+                      onDragEnter={handleDragSubmit}
+                      onDragOver={handleDragSubmit}
+                      onDragLeave={handleDragSubmit}
+                      onDrop={handleDropSubmit}
+                      className={`mt-2 p-4 rounded-xl border-2 border-dashed text-center transition-all relative ${
+                        dragActive 
+                          ? 'border-indigo-600 bg-indigo-50/50' 
+                          : 'border-slate-200 hover:border-slate-350 bg-slate-50/50'
+                      }`}
+                    >
+                      <input 
+                        type="file" 
+                        multiple 
+                        onChange={handleFileChangeSubmit}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                        id="file-translator-submit"
+                      />
+                      <div className="flex flex-col items-center justify-center gap-1.5 pointer-events-none">
+                        <FileUp size={22} className={`${dragActive ? 'text-indigo-600 animate-bounce' : 'text-slate-400'}`} />
+                        <span className="text-[11px] font-bold text-slate-700">
+                          {isRtl ? 'اسحب وأفلت الملفات هنا أو انقر للتصفح' : 'Drag & drop files here, or click to browse'}
+                        </span>
+                        <span className="text-[9px] text-slate-400">
+                          {isRtl ? 'صيغ المدعومة: DOCX, PDF, XLSX, TXT إلخ.' : 'Supported formats: DOCX, PDF, XLSX, TXT etc.'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* List of pending attachments inside modal */}
+                    {translatedAttachments.length > 0 && (
+                      <div className="mt-3 space-y-1.5 max-h-[140px] overflow-y-auto">
+                        <span className="text-[9px] font-black uppercase text-indigo-600 block">
+                          📁 {isRtl ? 'الملفات المحددة المرفقة:' : 'Selected Files:'}
+                        </span>
+                        {translatedAttachments.map(att => (
+                          <div key={att.id} className="flex items-center justify-between p-1.5 bg-indigo-50/50 border border-indigo-100 rounded text-[11px]">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <FileText size={12} className="text-indigo-500 shrink-0" />
+                              <span className="truncate max-w-[190px] font-semibold text-slate-700">{att.name}</span>
+                              <span className="text-[9px] text-zinc-405 font-mono font-bold">({(att.size / 1024).toFixed(0)} KB)</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSubmitAttachment(att.id)}
+                              className="text-red-500 hover:text-red-700 p-0.5"
+                              title={isRtl ? 'حذف الملف' : 'Delete file'}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Submission Comments / Notes */}
+                {(!isRevision || reviewActionType !== 'return') && (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-wide block mb-1">
+                      {isRtl ? 'ملاحظات / تعليقات تسليم العمل:' : 'Submission Comments / Notes:'}
+                    </label>
+                    <textarea
+                      value={submitNotes}
+                      onChange={(e) => setSubmitNotes(e.target.value)}
+                      placeholder={isRtl ? "أدخل أي ملاحظات ترغب في إطلاع الإدارة عليها..." : "Enter comments or notes about this delivery..."}
+                      className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-indigo-600 focus:outline-none text-slate-800"
+                      rows={2.5}
+                    />
+                  </div>
+                )}
+
+                <div className="flex gap-2 justify-end pt-3">
+                  <button
+                    type="button"
+                    onClick={() => { 
+                      setIsSubmitModalOpen(false); 
+                      setSelectedAsgId(null); 
+                      setTranslatedAttachments([]); 
+                      setSubmitNotes('');
+                      setCorrectionNotes('');
+                      setReviewActionType('submit');
+                    }}
+                    className="px-3 py-1.5 text-xs font-bold text-slate-500 bg-slate-100 rounded-lg hover:bg-slate-200 cursor-pointer"
+                  >
+                    {isRtl ? 'إلغاء' : 'Cancel'}
+                  </button>
+                  <button
+                    type="submit"
+                    className={`px-4 py-1.5 text-xs font-bold text-white rounded-lg cursor-pointer ${
+                      isRevision && reviewActionType === 'return' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700 animate-pulse'
+                    }`}
+                  >
+                    {isRevision 
+                      ? (reviewActionType === 'return' ? (isRtl ? 'إرجاع للتصحيح' : 'Return for Correction') : (isRtl ? 'تأكيد الإجراء والتسليم' : 'Confirm Action & Submit'))
+                      : (isRtl ? 'تأكيد وإرسال الترجمة' : 'Confirm & Submit Translation')}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 4. PRINTABLE MONTHLY LEDGER MODAL STATEMENT */}
       {isPrintModalOpen && (
