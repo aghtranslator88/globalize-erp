@@ -152,6 +152,8 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   branchId?: string; // Multi-office branch assignment
+  quotationId?: string;
+  quotation_id?: string;
 }
 
 export interface TaskAttachment {
@@ -242,6 +244,8 @@ export interface Quotation {
   
   convertedToInvoiceId?: string;
   convertedToJobId?: string;
+  linkedTaskId?: string;
+  linked_task_id?: string;
   
   createdBy: string;
   createdAt: string;

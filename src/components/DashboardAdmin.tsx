@@ -93,11 +93,13 @@ export const DashboardAdmin: React.FC<DashboardAdminProps> = ({ isRtl, onNavigat
             {isRtl ? 'لوحة تحكم المسؤول عن النظام والعمليات مخصصة للعمل الصامت والآمن' : 'Operations and Logistics Control environment'}
           </span>
           <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white capitalize">
-            {isRtl ? 'أهلاً بكِ Nada (المدير المسؤول) • مكتب الترجمة المعتمد' : 'Welcome back, Nada (Admin Manager)'}
+            {isRtl 
+              ? `أهلاً بك ${dbInstance.activeProfile?.fullNameAr || ''} (المدير المسؤول) • مكتب الترجمة المعتمد` 
+              : `Welcome back, ${dbInstance.activeProfile?.fullName || 'Admin'} (Admin Manager)`}
           </h1>
           <p className="text-xs text-zinc-400 mt-2 max-w-xl leading-relaxed">
             {isRtl 
-              ? 'تتيح لكِ هذه الواجهة مراقبة إنتاجية المترجمين، وإسناد المهام المعلقة، ومتابعة حالات المراجعة الفنية وتدقيق الملفات لضمان جودة الأداء.'
+              ? 'تتيح لك هذه الواجهة مراقبة إنتاجية المترجمين، وإسناد المهام المعلقة، ومتابعة حالات المراجعة الفنية وتدقيق الملفات لضمان جودة الأداء.'
               : 'Monitor active translator assignments, manage pending files, and supervise technical review streams to maintain top quality output standard.'}
           </p>
         </div>

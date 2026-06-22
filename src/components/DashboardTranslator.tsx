@@ -698,7 +698,7 @@ export const DashboardTranslator: React.FC<DashboardTranslatorProps> = ({
             <div className="p-8 text-center text-xs text-slate-400 leading-normal">
               {isRtl 
                 ? 'لا توجد مهام أو ملفات ترجمة مخصصة لك حالياً في النظام.' 
-                : 'You do not have any active assignments listed. Reach out to Admin (Nada) or Sales (Samar) to allocate translating pipelines!'}
+                : 'You do not have any active assignments listed. Reach out to Admin or Sales to allocate translating pipelines!'}
             </div>
           ) : (
             assignments.map(asg => {

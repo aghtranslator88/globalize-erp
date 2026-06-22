@@ -1573,14 +1573,28 @@ export class GTMSDatabase {
       this.save();
 
       // Notify managers / Admins
-      this.addNotification({
-        title: 'Task File Submitted',
-        titleAr: 'تم تسليم ملف مترجم',
-        message: `Translator submitted translation for file: ${asg.taskFileName || 'File'}. Ready for revision!`,
-        messageAr: `قام المترجم بتسليم الملف المترجم: ${asg.taskFileName || 'ملف'}. جاهز للمراجعة!`,
-        userId: 'p-nada',
-        type: 'warning'
-      });
+      const adminsAndOwners = this.profiles.filter(p => p.role === 'admin' || p.role === 'owner');
+      if (adminsAndOwners.length > 0) {
+        adminsAndOwners.forEach(p => {
+          this.addNotification({
+            title: 'Task File Submitted',
+            titleAr: 'تم تسليم ملف مترجم',
+            message: `Translator submitted translation for file: ${asg.taskFileName || 'File'}. Ready for revision!`,
+            messageAr: `قام المترجم بتسليم الملف المترجم: ${asg.taskFileName || 'ملف'}. جاهز للمراجعة!`,
+            userId: p.id,
+            type: 'warning'
+          });
+        });
+      } else {
+        this.addNotification({
+          title: 'Task File Submitted',
+          titleAr: 'تم تسليم ملف مترجم',
+          message: `Translator submitted translation for file: ${asg.taskFileName || 'File'}. Ready for revision!`,
+          messageAr: `قام المترجم بتسليم الملف المترجم: ${asg.taskFileName || 'ملف'}. جاهز للمراجعة!`,
+          userId: 'system',
+          type: 'warning'
+        });
+      }
 
       // Hand-off notification directly to any linked reviewer!
       const revAsgs = this.assignments.filter(a => a.taskId === asg.taskId && (a.assignmentType === 'revision' || a.assignmentType === 'proofreading') && a.translatorId !== asg.translatorId);
@@ -1697,14 +1711,28 @@ export class GTMSDatabase {
       
       this.save();
       
-      this.addNotification({
-        title: 'Task Assignment Declined',
-        titleAr: 'تم رفض مهمة ترجمة',
-        message: `Linguist declined assignment for "${asg.taskFileName || 'File'}". Reason: ${declineNotes || 'Not specified'}.`,
-        messageAr: `اعتذر المترجم عن المهمة للملف "${asg.taskFileName || 'الملف'}". السبب: ${declineNotes || 'غير محدد'}.`,
-        userId: 'p-nada', // Send notification to Nada (Manager)
-        type: 'warning'
-      });
+      const adminsAndOwners = this.profiles.filter(p => p.role === 'admin' || p.role === 'owner');
+      if (adminsAndOwners.length > 0) {
+        adminsAndOwners.forEach(p => {
+          this.addNotification({
+            title: 'Task Assignment Declined',
+            titleAr: 'تم رفض مهمة ترجمة',
+            message: `Linguist declined assignment for "${asg.taskFileName || 'File'}". Reason: ${declineNotes || 'Not specified'}.`,
+            messageAr: `اعتذر المترجم عن المهمة للملف "${asg.taskFileName || 'الملف'}". السبب: ${declineNotes || 'غير محدد'}.`,
+            userId: p.id,
+            type: 'warning'
+          });
+        });
+      } else {
+        this.addNotification({
+          title: 'Task Assignment Declined',
+          titleAr: 'تم رفض مهمة ترجمة',
+          message: `Linguist declined assignment for "${asg.taskFileName || 'File'}". Reason: ${declineNotes || 'Not specified'}.`,
+          messageAr: `اعتذر المترجم عن المهمة للملف "${asg.taskFileName || 'الملف'}". السبب: ${declineNotes || 'غير محدد'}.`,
+          userId: 'system',
+          type: 'warning'
+        });
+      }
     }
   }
 
@@ -2195,10 +2223,8 @@ export class GTMSDatabase {
       }
       
       if (status === 'confirmed') {
-        const intakeChannel = (q as any).intakeChannel;
-        if (intakeChannel) {
-          this.convertQuotationToJob(id, intakeChannel);
-        }
+        const intakeChannel = (q as any).intakeChannel || 'email';
+        this.convertQuotationToJob(id, intakeChannel);
       }
 
       if (status === 'confirmed' || status === 'converted') {
@@ -2314,6 +2340,23 @@ export class GTMSDatabase {
     const quote = this.quotations.find(q => q.id === quoteId);
     if (!quote) throw new Error('Quotation not found');
 
+    // Single-task constraint check (service level guard)
+    const existingTaskId = quote.convertedToJobId || quote.linkedTaskId || quote.linked_task_id;
+    if (existingTaskId) {
+      const existingTask = this.tasks.find(t => t.id === existingTaskId);
+      if (existingTask) {
+        return existingTask;
+      }
+    }
+    const duplicateTask = this.tasks.find(t => t.quotationId === quoteId || t.quotation_id === quoteId);
+    if (duplicateTask) {
+      quote.convertedToJobId = duplicateTask.id;
+      quote.linkedTaskId = duplicateTask.id;
+      quote.linked_task_id = duplicateTask.id;
+      this.save();
+      return duplicateTask;
+    }
+
     const id = `t-${Date.now()}`;
     const intakeDate = new Date().toISOString().split('T')[0];
     const referenceNo = this.generateRefNo(intakeDate);
@@ -2342,7 +2385,7 @@ export class GTMSDatabase {
       paidAmountEgp: 0,
       paidAmountAed: 0,
       paidAmountUsd: 0,
-      status: 'approved',
+      status: 'pending',
       intakeChannel,
       intakeDate,
       translationCost: 0,
@@ -2356,12 +2399,16 @@ export class GTMSDatabase {
       ],
       createdBy: this.activeProfile?.id || 'system',
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      quotationId: quote.id,
+      quotation_id: quote.id
     };
 
     this.tasks.unshift(newTask);
     quote.status = 'converted';
     quote.convertedToJobId = id;
+    quote.linkedTaskId = id;
+    quote.linked_task_id = id;
     this.convertLeadForQuotationToWon(quote);
 
     this.save();

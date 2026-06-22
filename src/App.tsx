@@ -178,6 +178,27 @@ function AppContent() {
     }
   }, [activeTab, currentRole, sessionUser]);
 
+  // Listen for global custom event tab navigation
+  useEffect(() => {
+    const handleNavigate = (e: any) => {
+      if (typeof e.detail === 'string') {
+        setActiveTab(e.detail as any);
+      } else if (e.detail && typeof e.detail === 'object') {
+        setActiveTab(e.detail.tab);
+        if (e.detail.tab === 'tasks' && e.detail.taskId) {
+          sessionStorage.setItem('goto_task_id', e.detail.taskId);
+          window.dispatchEvent(new CustomEvent('select-task', { detail: e.detail.taskId }));
+        }
+        if (e.detail.tab === 'sales_billing' && e.detail.quoteId) {
+          sessionStorage.setItem('goto_quote_id', e.detail.quoteId);
+          window.dispatchEvent(new CustomEvent('select-quote', { detail: e.detail.quoteId }));
+        }
+      }
+    };
+    window.addEventListener('navigate-tab', handleNavigate);
+    return () => window.removeEventListener('navigate-tab', handleNavigate);
+  }, []);
+
   const handleRoleChange = (role: UserRole) => {
     setCurrentRole(role);
     setActiveTab('dashboard'); // Default root tab upon credential alterations

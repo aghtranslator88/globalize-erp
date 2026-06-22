@@ -155,6 +155,39 @@ export class DatabaseManager {
     } else {
       await this.migrateProfileSecrets();
     }
+
+    // Database Migration: Clean all Nada references
+    await this.run("DELETE FROM entities WHERE id = 'p-nada'");
+    await this.run("DELETE FROM entities WHERE type = 'notifications' AND JSON_EXTRACT(data, '$.userId') = 'p-nada'");
+    
+    try {
+      const profiles = await this.getEntities("profiles");
+      for (const profile of profiles) {
+        if (
+          profile.fullName?.toLowerCase().includes("nada") || 
+          profile.fullNameAr?.includes("نادى") || 
+          profile.fullNameAr?.includes("ندى") || 
+          profile.id === "p-nada"
+        ) {
+          console.info(`Removing profile Nada (${profile.id}) from database.`);
+          await this.run("DELETE FROM entities WHERE type = 'profiles' AND id = ?", [profile.id]);
+        }
+      }
+
+      const tasks = await this.getEntities("tasks");
+      for (const task of tasks) {
+        let updated = false;
+        if (task.createdBy === 'p-nada') {
+          task.createdBy = 'system';
+          updated = true;
+        }
+        if (updated) {
+          await this.upsertEntity("tasks", task.id, task);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to run profile migration: ", err);
+    }
   }
 
   private async createInitialAdminFromEnv(): Promise<void> {
@@ -240,6 +273,20 @@ export class DatabaseManager {
   async saveAll(payload: any): Promise<void> {
     if (!payload || typeof payload !== "object") {
       throw new Error("Payload must be an object.");
+    }
+
+    // Backend guard: Ensure one approved quotation cannot generate multiple tasks
+    const quotationIds = new Set<string>();
+    if (payload.tasks && Array.isArray(payload.tasks)) {
+      for (const task of payload.tasks) {
+        const qId = task.quotation_id || task.quotationId;
+        if (qId) {
+          if (quotationIds.has(qId)) {
+            throw new Error(`Duplicate task creation detected for quotation: ${qId}`);
+          }
+          quotationIds.add(qId);
+        }
+      }
     }
 
     const release = await this.writeLock.acquire();

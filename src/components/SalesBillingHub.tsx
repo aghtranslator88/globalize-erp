@@ -19,6 +19,7 @@ import {
   QuotationStatus, InvoiceStatus, Client, ServiceType,
   PaymentMethod
 } from '../types';
+import { generateQuotationPDF, downloadQuotation } from '../utils/pdfGenerator';
 
 interface SalesBillingHubProps {
   isRtl: boolean;
@@ -287,6 +288,22 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
     paymentMethod: 'bank_saib',
   });
 
+  const [emailModal, setEmailModal] = useState<{
+    isOpen: boolean;
+    quote: Quotation | null;
+    to: string;
+    subject: string;
+    body: string;
+    sending: boolean;
+  }>({
+    isOpen: false,
+    quote: null,
+    to: '',
+    subject: '',
+    body: '',
+    sending: false
+  });
+
   const [depositProof, setDepositProof] = useState<{ url: string; name: string } | null>(null);
 
   const [proofPreview, setProofPreview] = useState<{
@@ -301,6 +318,31 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
     });
     return sub;
   }, []);
+
+  useEffect(() => {
+    const selectQuote = (quoteId: string) => {
+      const q = dbInstance.quotations.find(quote => quote.id === quoteId);
+      if (q) {
+        setSelectedQuoteId(q.id);
+      }
+    };
+
+    const handleSelectQuoteEvent = (e: any) => {
+      selectQuote(e.detail);
+    };
+
+    window.addEventListener('select-quote', handleSelectQuoteEvent);
+
+    const storedQuoteId = sessionStorage.getItem('goto_quote_id');
+    if (storedQuoteId) {
+      sessionStorage.removeItem('goto_quote_id');
+      setTimeout(() => selectQuote(storedQuoteId), 250);
+    }
+
+    return () => {
+      window.removeEventListener('select-quote', handleSelectQuoteEvent);
+    };
+  }, [tick]);
 
   const data = useMemo(() => {
     return {
@@ -666,6 +708,7 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
       const newQuote = dbInstance.addQuotation(payload);
       dbInstance.checkAutomationTriggers('quotation_sent', { clientId: targetClientId });
       alert(isRtl ? 'تم إنشاء وحفظ عرض السعر بنجاح' : 'Quotation created successfully');
+      handleSavePDF(newQuote);
     }
 
     setIsCreateModalOpen(false);
@@ -741,10 +784,19 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
   };
 
   const handleSendEmail = (quote: Quotation) => {
-    const subject = `Quotation ${quote.quoteNumber}`;
-    const body = `Dear ${quote.clientName},\n\nPlease find attached the PDF quotation for ${quote.fileName || ''}.\n\nTotal: ${quote.grandTotal} ${quote.currency}`;
-    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    dbInstance.updateQuotationStatus(quote.id, 'sent');
+    const client = clients.find(c => c.id === quote.clientId);
+    const emailTo = client?.email || (quote as any).clientEmail || '';
+    const subject = `Pricing Proposal & Sizing Audit Quote: ${quote.quoteNumber}`;
+    const body = `Dear ${quote.clientName},\n\nPlease find attached our official certified translation quotation ${quote.quoteNumber}.\n\nGrand Total: ${quote.grandTotal} ${quote.currency}\n\nWe look forward to collaborating with you.\n\nBest regards,\nQA Logistics Operations Team\n${dbInstance.brandConfig?.companyName || 'Globalize Translation'}`;
+    
+    setEmailModal({
+      isOpen: true,
+      quote,
+      to: emailTo,
+      subject,
+      body,
+      sending: false
+    });
   };
 
   const handlePrint = (quote: Quotation) => {
@@ -752,13 +804,80 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
     window.print();
   };
 
-  const handleSavePDF = (quote: Quotation) => {
-    alert(isRtl ? `جاري تحميل ${quote.quoteNumber}.pdf...` : `Downloading ${quote.quoteNumber}.pdf...`);
-    // In a real app, this would use jspdf or a server-side route
-    const link = document.createElement('a');
-    link.href = '#';
-    link.download = `${quote.quoteNumber}.pdf`;
-    link.click();
+  const handleSavePDF = async (quote: Quotation) => {
+    const brand = dbInstance.brandConfig || dbInstance.getEmptyBrandConfig();
+    try {
+      await downloadQuotation(quote, brand, isRtl);
+    } catch (err) {
+      console.error(err);
+      alert(isRtl ? 'حدث خطأ أثناء تحميل الملف' : 'An error occurred while exporting the PDF.');
+    }
+  };
+
+  const submitSendEmail = async () => {
+    if (!emailModal.quote) return;
+    if (!emailModal.to || !emailModal.to.includes('@')) {
+      alert(isRtl ? 'يرجى إدخال بريد إلكتروني صحيح' : 'Please enter a valid recipient email address.');
+      return;
+    }
+
+    setEmailModal(prev => ({ ...prev, sending: true }));
+    try {
+      const brand = dbInstance.brandConfig || dbInstance.getEmptyBrandConfig();
+      const pdfBlob = await generateQuotationPDF(emailModal.quote, brand, isRtl);
+      
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          const base64Data = result.split(',')[1];
+          resolve(base64Data);
+        };
+        reader.onerror = reject;
+      });
+      reader.readAsDataURL(pdfBlob);
+      const pdfBase64 = await base64Promise;
+
+      const clientNameClean = (emailModal.quote.clientName || 'Client').replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `Quotation-${emailModal.quote.quoteNumber}-${clientNameClean}.pdf`;
+
+      const response = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        },
+        body: JSON.stringify({
+          to: emailModal.to,
+          subject: emailModal.subject,
+          text: emailModal.body,
+          html: `<div style="font-family: sans-serif; font-size: 14px; color: #374151; line-height: 1.6;">
+            <p>${emailModal.body.replace(/\n/g, '<br>')}</p>
+          </div>`,
+          attachments: [
+            {
+              filename,
+              content: pdfBase64,
+              contentType: 'application/pdf'
+            }
+          ]
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to send email.');
+      }
+
+      dbInstance.updateQuotationStatus(emailModal.quote.id, 'sent');
+      alert(isRtl ? 'تم إرسال عرض السعر المعتمد بنجاح مع الملف المرفق!' : 'Official quotation proposal sent successfully with attached PDF document!');
+      setEmailModal(prev => ({ ...prev, isOpen: false, quote: null }));
+    } catch (err: any) {
+      console.error(err);
+      alert(isRtl ? `فشل إرسال البريد: ${err.message}` : `SMTP Delivery failed: ${err.message}`);
+    } finally {
+      setEmailModal(prev => ({ ...prev, sending: false }));
+    }
   };
 
   const resetForm = () => {
@@ -2506,6 +2625,32 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
                   </button>
                 </div>
 
+                {/* Linked Task reference bar (not printable) */}
+                {(() => {
+                  const linkedTask = data.invoices && dbInstance.tasks?.find(t => t.quotationId === q.id || t.quotation_id === q.id || q.convertedToJobId === t.id || q.linkedTaskId === t.id || q.linked_task_id === t.id);
+                  if (linkedTask) {
+                    return (
+                      <div className="bg-emerald-50 border-b border-emerald-250 px-6 py-2.5 flex items-center justify-between text-xs text-emerald-800 shrink-0 font-sans no-print-area select-none">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold">{isRtl ? 'المهمة المربوطة والمفتوحة في النظام:' : 'Linked active task:'}</span>
+                          <span className="font-mono bg-emerald-100 px-1.5 py-0.5 rounded font-black border border-emerald-200">{linkedTask.referenceNo}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedQuoteId(null);
+                            window.dispatchEvent(new CustomEvent('navigate-tab', { detail: { tab: 'tasks', taskId: linkedTask.id } }));
+                          }}
+                          className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg cursor-pointer transition-colors shadow-xs"
+                        >
+                          {isRtl ? 'فتح المهمة المربوطة' : 'Open Linked Task'}
+                        </button>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
                 {/* Print area */}
                 <div className="flex-1 overflow-y-auto p-6 bg-zinc-200">
                   <div 
@@ -2700,16 +2845,22 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
                 </div>
 
                 {/* Reader controller buttons */}
-                <div className="p-4 bg-zinc-50 border-t border-zinc-150 shrink-0 flex items-center justify-end gap-3">
+                <div className="p-4 bg-zinc-50 border-t border-zinc-150 shrink-0 flex items-center justify-end gap-3 no-print-area">
+                  <button 
+                    onClick={() => handleSavePDF(q)}
+                    className="px-6 py-2 bg-emerald-600 text-white text-xs font-black rounded-xl hover:bg-emerald-700 transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download size={14} /> Download PDF
+                  </button>
                   <button 
                     onClick={() => window.print()}
-                    className="px-6 py-2 bg-brand-navy text-white text-xs font-black rounded-xl hover:bg-brand-navy-hover transition-all flex items-center gap-1.5"
+                    className="px-6 py-2 bg-brand-navy text-white text-xs font-black rounded-xl hover:bg-brand-navy-hover transition-all flex items-center gap-1.5 cursor-pointer"
                   >
                     <Printer size={14} /> Print Document
                   </button>
                   <button 
                     onClick={() => setSelectedQuoteId(null)}
-                    className="px-4 py-2 bg-zinc-200 hover:bg-zinc-300 rounded-xl text-xs font-bold text-zinc-700 transition-all font-sans"
+                    className="px-4 py-2 bg-zinc-200 hover:bg-zinc-300 rounded-xl text-xs font-bold text-zinc-700 transition-all font-sans cursor-pointer"
                   >
                     Close
                   </button>
@@ -3119,6 +3270,91 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
            subtext={isRtl ? 'عروض تحولت لمشاريع' : 'Successfully closed deals'}
          />
       </div>
+
+      {/* Email Send Modal Overlay */}
+      {emailModal.isOpen && emailModal.quote && (
+        <div className="fixed inset-0 bg-zinc-950/60 flex items-center justify-center z-[120] p-4 animate-fade-in font-sans backdrop-blur-xs">
+          <div className="bg-white p-6 rounded-xl w-full max-w-lg border border-zinc-200 shadow-xl flex flex-col text-xs text-zinc-700">
+            <h3 className="font-extrabold tracking-tight text-base text-zinc-900 mb-2 pb-2 border-b border-zinc-150 flex items-center gap-1.5">
+              <Mail size={16} />
+              {isRtl ? 'إرسال عرض السعر بالبريد الإلكتروني' : 'Send Official Quotation via Email'}
+            </h3>
+            
+            <div className="space-y-4 my-2 flex-1">
+              <div>
+                <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block mb-1">Recipient Email</label>
+                <input 
+                  type="email" 
+                  value={emailModal.to} 
+                  onChange={e => setEmailModal({ ...emailModal, to: e.target.value })}
+                  className="w-full p-2 bg-white border border-zinc-250 rounded-lg font-mono text-[11px] font-semibold text-zinc-800 focus:outline-none focus:border-zinc-400"
+                  placeholder="client@example.com"
+                  disabled={emailModal.sending}
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block mb-1">Subject</label>
+                <input 
+                  type="text" 
+                  value={emailModal.subject} 
+                  onChange={e => setEmailModal({ ...emailModal, subject: e.target.value })}
+                  className="w-full p-2 bg-white border border-zinc-250 rounded-lg text-[11px] font-semibold text-zinc-800 focus:outline-none focus:border-zinc-400"
+                  disabled={emailModal.sending}
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block mb-1">Email Body Text</label>
+                <textarea 
+                  value={emailModal.body} 
+                  onChange={e => setEmailModal({ ...emailModal, body: e.target.value })}
+                  rows={6}
+                  className="w-full p-2 bg-white border border-zinc-250 rounded-lg text-[11px] font-medium text-zinc-800 focus:outline-none focus:border-zinc-400 whitespace-pre-line leading-relaxed"
+                  disabled={emailModal.sending}
+                />
+              </div>
+
+              <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-lg flex items-center gap-2">
+                <Paperclip size={14} className="text-zinc-400" />
+                <div>
+                  <span className="font-semibold text-zinc-800 block text-[10px]">Attached Document:</span>
+                  <span className="font-mono text-zinc-500 text-[9px]">Quotation-${emailModal.quote.quoteNumber}.pdf (Automatically generated A4 proposal)</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-3 border-t border-zinc-150 mt-4 font-sans">
+              <button
+                type="button"
+                onClick={() => setEmailModal({ ...emailModal, isOpen: false, quote: null })}
+                className="px-4 py-2 text-xs font-semibold text-zinc-500 bg-zinc-50 hover:bg-zinc-100 rounded-lg border border-zinc-200/60 cursor-pointer"
+                disabled={emailModal.sending}
+              >
+                {isRtl ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={submitSendEmail}
+                className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 rounded-lg cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors"
+                disabled={emailModal.sending}
+              >
+                {emailModal.sending ? (
+                  <>
+                    <RefreshCw className="animate-spin" size={12} />
+                    {isRtl ? 'جاري الإرسال والتحميل...' : 'Generating & Sending...'}
+                  </>
+                ) : (
+                  <>
+                    <Send size={12} />
+                    {isRtl ? 'إرسال البريد المرفق' : 'Send Proposal PDF'}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

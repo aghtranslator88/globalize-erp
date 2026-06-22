@@ -62,6 +62,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
   const [notes, setNotes] = useState('');
   const [priority, setPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium');
   const [deadline, setDeadline] = useState('');
+  const [linkedQuotationId, setLinkedQuotationId] = useState('');
 
   // Initial payment allocation tracking states
   const [initialPaidAmountEgp, setInitialPaidAmountEgp] = useState<number>(0);
@@ -286,6 +287,31 @@ export const TasksPage: React.FC<TasksPageProps> = ({
     return sub;
   }, [currentBranchId]);
 
+  useEffect(() => {
+    const selectTask = (taskId: string) => {
+      const task = dbInstance.tasks.find(t => t.id === taskId);
+      if (task) {
+        handleOpenAssign(task);
+      }
+    };
+
+    const handleSelectTaskEvent = (e: any) => {
+      selectTask(e.detail);
+    };
+
+    window.addEventListener('select-task', handleSelectTaskEvent);
+
+    const storedTaskId = sessionStorage.getItem('goto_task_id');
+    if (storedTaskId) {
+      sessionStorage.removeItem('goto_task_id');
+      setTimeout(() => selectTask(storedTaskId), 250);
+    }
+
+    return () => {
+      window.removeEventListener('select-task', handleSelectTaskEvent);
+    };
+  }, [tasks]);
+
   const sendAutomatedEmail = async (to: string, subject: string, text: string) => {
     setEmailLoading(true);
     setEmailStatus(null);
@@ -375,8 +401,21 @@ export const TasksPage: React.FC<TasksPageProps> = ({
       initialPaidAmountAed: activeCurrency === 'AED' ? initialPaidAmountEgp : 0,
       initialPaidAmountUsd: activeCurrency === 'USD' ? initialPaidAmountEgp : 0,
       initialPaymentMethod,
-      branchId: currentBranchId !== 'all' ? currentBranchId : 'b-cairo'
+      branchId: currentBranchId !== 'all' ? currentBranchId : 'b-cairo',
+      quotationId: linkedQuotationId || undefined,
+      quotation_id: linkedQuotationId || undefined
     });
+
+    if (linkedQuotationId) {
+      const q = dbInstance.quotations.find(quote => quote.id === linkedQuotationId);
+      if (q) {
+        q.convertedToJobId = newTask.id;
+        q.linkedTaskId = newTask.id;
+        q.linked_task_id = newTask.id;
+        q.status = 'converted';
+        dbInstance.save();
+      }
+    }
 
     if (isQuickIntakeOpen) {
       const qQuantity = words || pages || 1;
@@ -468,6 +507,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
     setNotes('');
     setPriority('medium');
     setDeadline('');
+    setLinkedQuotationId('');
     setAttachments([]);
     setDragActive(false);
     setInitialPaidAmountEgp(0);
@@ -1362,7 +1402,17 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                         </td>
                       )}
                       <td className="px-5 py-3.5 text-center border-r border-zinc-100 font-bold font-mono text-zinc-900 select-all shrink-0">
-                        {t.referenceNo}
+                        <div>{t.referenceNo}</div>
+                        {(() => {
+                          const qId = t.quotationId || t.quotation_id;
+                          const q = quotations.find(item => item.id === qId || item.convertedToJobId === t.id || item.linkedTaskId === t.id || item.linked_task_id === t.id);
+                          return q ? (
+                            <div className="text-[9px] text-zinc-400 mt-1 font-semibold no-print-area">
+                              {isRtl ? 'عرض السعر: ' : 'Quote: '}
+                              <span className="text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-150 font-bold">{q.quoteNumber}</span>
+                            </div>
+                          ) : null;
+                        })()}
                       </td>
                       <td className="px-5 py-3.5 border-r border-zinc-100 font-semibold text-zinc-900">
                         {t.clientNameCache}
@@ -1719,6 +1769,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                     <select
                       onChange={(e) => {
                         const val = e.target.value;
+                        setLinkedQuotationId(val);
                         if (!val) return;
                         const q = quotations.find(item => item.id === val);
                         if (q) {
@@ -2534,8 +2585,39 @@ export const TasksPage: React.FC<TasksPageProps> = ({
               <>
                 <h4 className="font-semibold text-zinc-900 text-sm border-b border-zinc-100 pb-2.5 flex items-center gap-1.5">
                   <UserPlus size={16} className="text-zinc-900" />
-                  Assign folder to linguist
+                  {isRtl ? 'تفاصيل المهمة وتعيين اللغوي' : 'Task Details & Allocation'}
                 </h4>
+                <div className="bg-zinc-50 border border-zinc-200/60 rounded-lg p-3 text-[11px] space-y-1.5 text-zinc-650 mt-2.5 no-print-area">
+                  <div className="flex justify-between">
+                    <span className="font-medium text-zinc-400">{isRtl ? 'رقم المهمة:' : 'Task Number:'}</span>
+                    <strong className="text-zinc-900 font-mono font-bold">{selectedTaskForAssign.referenceNo}</strong>
+                  </div>
+                  {(() => {
+                    const qId = selectedTaskForAssign.quotationId || selectedTaskForAssign.quotation_id;
+                    const q = quotations.find(item => item.id === qId || item.convertedToJobId === selectedTaskForAssign.id || item.linkedTaskId === selectedTaskForAssign.id || item.linked_task_id === selectedTaskForAssign.id);
+                    if (q) {
+                      return (
+                        <div className="flex justify-between items-center border-t border-zinc-150 pt-1.5 mt-1.5">
+                          <div>
+                            <span className="font-medium text-zinc-400 block">{isRtl ? 'عرض السعر المربوط:' : 'Linked Quotation:'}</span>
+                            <strong className="text-indigo-800 font-mono font-bold">{q.quoteNumber}</strong>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTaskForAssign(null);
+                              window.dispatchEvent(new CustomEvent('navigate-tab', { detail: { tab: 'sales_billing', quoteId: q.id } }));
+                            }}
+                            className="px-2.5 py-1 bg-indigo-650 hover:bg-indigo-750 text-white font-bold rounded text-[9px] cursor-pointer transition-colors"
+                          >
+                            {isRtl ? 'فتح عرض السعر' : 'Open Linked Quote'}
+                          </button>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </div>
                 <p className="text-[10px] text-zinc-400 leading-normal mt-2.5">
                   Select accredited translation specialist. This assigns their word balance queues, and increments translation task costing.
                 </p>
@@ -3805,6 +3887,28 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                   <p className="text-[10px] text-zinc-400 mt-0.5">
                     Ref: {task.referenceNo} • Unique ID: {task.id}
                   </p>
+                  {(() => {
+                    const qId = task.quotationId || task.quotation_id;
+                    const q = quotations.find(item => item.id === qId || item.convertedToJobId === task.id || item.linkedTaskId === task.id || item.linked_task_id === task.id);
+                    if (q) {
+                      return (
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[9px] text-zinc-300 font-semibold">{isRtl ? 'عرض السعر المربوط:' : 'Linked Quotation:'} {q.quoteNumber}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTaskForAccDetails(null);
+                              window.dispatchEvent(new CustomEvent('navigate-tab', { detail: { tab: 'sales_billing', quoteId: q.id } }));
+                            }}
+                            className="px-1.5 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-brand-gold font-bold rounded text-[8px] cursor-pointer transition-colors border border-zinc-700"
+                          >
+                            {isRtl ? 'فتح عرض السعر' : 'Open Linked Quote'}
+                          </button>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
                 <button
                   onClick={() => setSelectedTaskForAccDetails(null)}

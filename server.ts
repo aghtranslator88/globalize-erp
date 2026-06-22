@@ -217,12 +217,19 @@ async function startServer() {
         auth: { user, pass }
       });
 
+      const attachments = req.body.attachments ? req.body.attachments.map((att: any) => ({
+        filename: att.filename,
+        content: Buffer.from(att.content, 'base64'),
+        contentType: att.contentType || 'application/pdf'
+      })) : undefined;
+
       const info = await transporter.sendMail({
         from,
         to: req.body.to,
         subject: req.body.subject,
         text: req.body.text,
-        html: req.body.html
+        html: req.body.html,
+        attachments
       });
 
       res.json({ success: true, messageId: info.messageId });

@@ -148,7 +148,9 @@ export const DashboardOwner: React.FC<DashboardOwnerProps> = ({ isRtl, onNavigat
         <div className="relative z-10">
           <span className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-gold block mb-1">System Status • Intelligence Core</span>
           <h2 className="text-2xl font-light tracking-tight">
-            {isRtl ? 'أهلاً بك' : 'Welcome'}
+            {isRtl 
+              ? `أهلاً بك ${dbInstance.activeProfile?.fullNameAr || ''}` 
+              : `Welcome, ${dbInstance.activeProfile?.fullName || 'Owner'}`}
           </h2>
           <p className="text-xs text-brand-navy-light mt-2 max-w-2xl leading-relaxed">
             {isRtl 
