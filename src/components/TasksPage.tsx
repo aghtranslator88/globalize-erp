@@ -72,6 +72,8 @@ export const TasksPage: React.FC<TasksPageProps> = ({
   const [isRegisteringNewClient, setIsRegisteringNewClient] = useState(false);
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailStatus, setEmailStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
+  const [whatsappLoading, setWhatsappLoading] = useState(false);
+  const [whatsappStatus, setWhatsappStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
   const [clientSearchQuery, setClientSearchQuery] = useState('');
   const [showClientSuggestions, setShowClientSuggestions] = useState(false);
   const [newClientName, setNewClientName] = useState('');
@@ -555,6 +557,40 @@ export const TasksPage: React.FC<TasksPageProps> = ({
       });
     } finally {
       setEmailLoading(false);
+    }
+  };
+
+  const sendAutomatedWhatsApp = async (phone: string, text: string) => {
+    setWhatsappLoading(true);
+    setWhatsappStatus(null);
+    try {
+      const response = await fetch('/api/whatsapp/send-message', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        },
+        body: JSON.stringify({ phone, text })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setWhatsappStatus({ 
+          type: 'success', 
+          msg: isRtl ? 'تم إرسال إشعار واتساب التلقائي بنجاح!' : 'Automated WhatsApp notification sent successfully!' 
+        });
+      } else {
+        setWhatsappStatus({ 
+          type: 'error', 
+          msg: data.error || (isRtl ? 'فشل في إرسال واتساب.' : 'Failed to send WhatsApp message.') 
+        });
+      }
+    } catch (err) {
+      setWhatsappStatus({ 
+        type: 'error', 
+        msg: isRtl ? 'خطأ في الاتصال بالخادم.' : 'Connection error with gateway.' 
+      });
+    } finally {
+      setWhatsappLoading(false);
     }
   };
 
@@ -2612,6 +2648,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                       setAssignedSuccessData(null);
                       setSelectedTaskForAssign(null);
                       setEmailStatus(null);
+                      setWhatsappStatus(null);
                     }}
                     className="w-10 h-10 flex items-center justify-center bg-white border-2 border-zinc-200 rounded-full text-zinc-500 hover:text-zinc-800 hover:bg-zinc-50 shadow-lg transition-all active:scale-90 cursor-pointer"
                     title={isRtl ? 'إغلاق' : 'Close'}
@@ -2682,14 +2719,27 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                               <span className="text-emerald-700 font-bold">💬 WhatsApp: {assignedSuccessData.translator.fullName}</span>
                               <span className="text-zinc-400">{notify.phone}</span>
                             </div>
-                            <a
-                              href={notify.whatsappUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1.5 px-2 rounded text-center text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                            >
-                              <span>{isRtl ? 'إرسال واتساب للمترجم' : 'WhatsApp Notification'}</span>
-                            </a>
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={() => sendAutomatedWhatsApp(notify.phone, notify.message)}
+                                disabled={whatsappLoading}
+                                className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-400 text-white font-bold py-1.5 px-2 rounded text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                              >
+                                {whatsappLoading ? (
+                                  <span className="animate-pulse">...</span>
+                                ) : (
+                                  <span>{isRtl ? 'إرسال تلقائي' : 'Auto Send'}</span>
+                                )}
+                              </button>
+                              <a
+                                href={notify.whatsappUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-600 font-bold py-1.5 px-2 rounded text-center text-[10px] transition-colors cursor-pointer flex items-center justify-center gap-1"
+                              >
+                                <span>{isRtl ? 'يدوي' : 'Manual'}</span>
+                              </a>
+                            </div>
                           </div>
 
                           {/* Email Dispatch Option */}
@@ -2746,14 +2796,27 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                                 <span className="text-emerald-700 font-bold">💬 WhatsApp: {assignedSuccessData.reviewer!.fullName}</span>
                                 <span className="text-zinc-400">{notify.phone}</span>
                               </div>
-                              <a
-                                href={notify.whatsappUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1.5 px-2 rounded text-center text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                              >
-                                <span>{isRtl ? 'إرسال واتساب للمراجع' : 'WhatsApp Notification'}</span>
-                              </a>
+                              <div className="flex gap-1.5">
+                                <button
+                                  onClick={() => sendAutomatedWhatsApp(notify.phone, notify.message)}
+                                  disabled={whatsappLoading}
+                                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-400 text-white font-bold py-1.5 px-2 rounded text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                                >
+                                  {whatsappLoading ? (
+                                    <span className="animate-pulse">...</span>
+                                  ) : (
+                                    <span>{isRtl ? 'إرسال تلقائي' : 'Auto Send'}</span>
+                                  )}
+                                </button>
+                                <a
+                                  href={notify.whatsappUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-600 font-bold py-1.5 px-2 rounded text-center text-[10px] transition-colors cursor-pointer flex items-center justify-center gap-1"
+                                >
+                                  <span>{isRtl ? 'يدوي' : 'Manual'}</span>
+                                </a>
+                              </div>
                             </div>
 
                             {/* Email Dispatch Option */}
@@ -2801,6 +2864,17 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                       {emailStatus.type === 'error' && (
                         <p className="font-normal mt-0.5 opacity-80">
                           {isRtl ? 'تأكد من إعداد بيانات SMTP في الإعدادات.' : 'Ensure SMTP_HOST/PASS are set in app settings.'}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {whatsappStatus && (
+                    <div className={`text-[9px] font-bold px-2 py-1 rounded ${whatsappStatus.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                      {whatsappStatus.msg}
+                      {whatsappStatus.type === 'error' && (
+                        <p className="font-normal mt-0.5 opacity-80">
+                          {isRtl ? 'تأكد من تهيئة META_ACCESS_TOKEN في الخادم.' : 'Ensure META_ACCESS_TOKEN is configured in server env.'}
                         </p>
                       )}
                     </div>

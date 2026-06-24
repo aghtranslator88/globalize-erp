@@ -776,11 +776,43 @@ Any official certifications, stamps, or physical dispatch fees are billed separa
     }
   };
 
-  const handleSendWhatsApp = (quote: Quotation) => {
+  const handleSendWhatsApp = async (quote: Quotation) => {
+    const client = clients.find(c => c.id === quote.clientId);
+    const phone = client?.phone || (quote as any).clientWhatsapp || (quote as any).clientPhone || '';
     const text = `Hi ${quote.clientName}, please find our quotation ${quote.quoteNumber} for ${quote.grandTotal} ${quote.currency}.`;
-    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank');
-    dbInstance.updateQuotationStatus(quote.id, 'sent');
+    
+    if (!phone) {
+      alert(isRtl ? 'لم يتم العثور على رقم هاتف مسجل لهذا العميل.' : 'No registered phone number found for this client.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/whatsapp/send-message', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        },
+        body: JSON.stringify({ phone, text })
+      });
+      const data = await response.json();
+      if (data.success) {
+        dbInstance.updateQuotationStatus(quote.id, 'sent');
+        alert(isRtl ? 'تم إرسال عرض السعر عبر واتساب بنجاح!' : 'Quotation alert sent successfully via WhatsApp!');
+      } else {
+        console.warn('WhatsApp API dispatch failed, falling back to manual link:', data.error);
+        const cleanPhone = phone.replace(/[^0-9]/g, '');
+        const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+        window.open(url, '_blank');
+        dbInstance.updateQuotationStatus(quote.id, 'sent');
+      }
+    } catch (err) {
+      console.error('WhatsApp API gateway down, falling back to manual link:', err);
+      const cleanPhone = phone.replace(/[^0-9]/g, '');
+      const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+      window.open(url, '_blank');
+      dbInstance.updateQuotationStatus(quote.id, 'sent');
+    }
   };
 
   const handleSendEmail = (quote: Quotation) => {

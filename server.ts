@@ -117,7 +117,12 @@ async function startServer() {
   app.disable("x-powered-by");
   app.use(securityHeaders);
   app.use(requestLogger);
-  app.use(express.json({ limit: jsonLimit }));
+  app.use(express.json({
+    limit: jsonLimit,
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString();
+    }
+  }));
   app.use(express.urlencoded({ limit: jsonLimit, extended: true }));
 
   const dbManager = new DatabaseManager(DB_FILE_PATH);
@@ -178,9 +183,21 @@ async function startServer() {
     res.json({ success: verifyPassword(password, profile.passwordHash) });
   });
 
-  app.get("/api/load-db", authenticated, async (_req, res) => {
+  app.get("/api/load-db", authenticated, async (req: AuthenticatedRequest, res) => {
     try {
       const data = await dbManager.loadAll({ redactSecrets: true });
+      
+      // Isolate leads and chats for sales team members
+      if (req.user && req.user.role === "sales") {
+        data.leads = (data.leads || []).filter((l: any) => l.assignedTo === req.user.id);
+        const salesLeadPhones = new Set(data.leads.map((l: any) => l.phone?.replace(/\D/g, "")).filter(Boolean));
+        
+        data.whatsappChats = (data.whatsappChats || []).filter((c: any) => {
+          const norm = c.phone?.replace(/\D/g, "");
+          return norm && salesLeadPhones.has(norm);
+        });
+      }
+      
       return res.json({ success: true, data });
     } catch (error: any) {
       console.error("Error loading database:", error);
@@ -188,11 +205,11 @@ async function startServer() {
     }
   });
 
-  app.post("/api/save-db", authenticated, requireRoles("owner", "admin", "accountant", "sales", "translator"), async (req, res) => {
+  app.post("/api/save-db", authenticated, requireRoles("owner", "admin", "accountant", "sales", "translator"), async (req: AuthenticatedRequest, res) => {
     try {
       const { payload } = req.body;
       if (!payload) return res.status(400).json({ success: false, error: "Missing payload." });
-      await dbManager.saveAll(payload);
+      await dbManager.saveAll(payload, req.user);
       return res.json({ success: true });
     } catch (error: any) {
       console.error("Error saving database:", error);
