@@ -147,9 +147,7 @@ async function sendMetaMessageWithRetry(
   }
 }
 
-export async function runAIAgentForClient(phone: string, text: string, isSimulation = false): Promise<string> {
-  const db = await loadDB();
-  if (!db) throw new Error("Database is not available.");
+export async function runAIAgentForClient(db: any, phone: string, text: string, isSimulation = false): Promise<string> {
 
   const matchedClient = db.clients?.find((client: any) => phonesMatch(client.phone, phone));
   let conversation = db.whatsappChats?.find((chat: any) => phonesMatch(chat.phone, phone));
@@ -305,7 +303,6 @@ export async function runAIAgentForClient(phone: string, text: string, isSimulat
     }
   }
 
-  await saveDB(db);
   return replyText;
 }
 
@@ -415,7 +412,7 @@ export async function processWebhookPayload(body: any, db: any, isSimulation = f
           }
 
           // Route through AI agent or just append message to chat session
-          await runAIAgentForClient(senderPhone, messageText, isSimulation);
+          await runAIAgentForClient(db, senderPhone, messageText, isSimulation);
         }
       }
     }

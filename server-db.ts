@@ -299,7 +299,11 @@ export class DatabaseManager {
     return options.redactSecrets ? sanitizePayloadForClient(result) : result;
   }
 
-  async saveAll(payload: any, userContext?: { id: string; role: string }): Promise<void> {
+  async saveAll(
+    payload: any,
+    userContext?: { id: string; role: string },
+    options?: { preserveWhatsApp?: boolean }
+  ): Promise<void> {
     if (!payload || typeof payload !== "object") {
       throw new Error("Payload must be an object.");
     }
@@ -323,12 +327,16 @@ export class DatabaseManager {
     try {
       const fullDb = await this.loadAll();
 
-      // Always preserve WhatsApp chats, logs, templates, and settings from the database
-      // because they are updated in real-time by webhooks and dedicated APIs.
-      payload.whatsappChats = fullDb.whatsappChats || [];
-      payload.whatsappLogs = fullDb.whatsappLogs || [];
-      payload.whatsappSettings = fullDb.whatsappSettings || null;
-      payload.whatsappTemplates = fullDb.whatsappTemplates || [];
+      const preserveWhatsApp = options?.preserveWhatsApp ?? (userContext !== undefined);
+      if (preserveWhatsApp) {
+        // Always preserve WhatsApp chats, logs, templates, and settings from the database
+        // if the save is requested from the client side (userContext is present).
+        // This protects real-time webhook updates from being overwritten by frontend state saves.
+        payload.whatsappChats = fullDb.whatsappChats || [];
+        payload.whatsappLogs = fullDb.whatsappLogs || [];
+        payload.whatsappSettings = fullDb.whatsappSettings || null;
+        payload.whatsappTemplates = fullDb.whatsappTemplates || [];
+      }
 
       // Role-based data merging and security isolation
       if (userContext && userContext.role === "sales") {
