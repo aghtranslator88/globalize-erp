@@ -163,6 +163,28 @@ export class DatabaseManager {
       await this.migrateProfileSecrets();
     }
 
+    const templateRow = await this.get("SELECT COUNT(*) as count FROM entities WHERE type = 'whatsappTemplates'");
+    if (Number(templateRow?.count || 0) === 0) {
+      await this.upsertEntity("whatsappTemplates", "tpl-reminder", {
+        id: "tpl-reminder",
+        name: "invoice_payment_reminder",
+        category: "utility",
+        language: "en_US",
+        body: "Hello {{1}}, this is a friendly reminder that invoice {{2}} is due for payment. The total amount is {{3}}.",
+        variables: ["client_name", "invoice_number", "amount_due"],
+        status: "approved"
+      });
+      await this.upsertEntity("whatsappTemplates", "tpl-quote", {
+        id: "tpl-quote",
+        name: "quotation_ready",
+        category: "utility",
+        language: "en_US",
+        body: "Hello {{1}}, your quotation {{2}} is ready. The estimated total is {{3}}.",
+        variables: ["client_name", "quotation_number", "estimated_total"],
+        status: "approved"
+      });
+    }
+
     // Database Migration: Clean all Nada references
     await this.run("DELETE FROM entities WHERE id = 'p-nada'");
     await this.run("DELETE FROM entities WHERE type = 'notifications' AND JSON_EXTRACT(data, '$.userId') = 'p-nada'");
@@ -282,72 +304,6 @@ export class DatabaseManager {
       throw new Error("Payload must be an object.");
     }
 
-    // Role-based data merging and security isolation
-    if (userContext && userContext.role === "sales") {
-      const fullDb = await this.loadAll();
-      
-      // Sales allowed tables. Discard sales-sent values for other tables.
-      const salesAllowedKeys = [
-        "leads", "leadActivities", "clients", "whatsappChats", "whatsappTemplates", "whatsappLogs",
-        "quotations", "invoices", "tasks", "notifications", "feedback"
-      ];
-      
-      for (const key of COLLECTION_KEYS) {
-        if (!salesAllowedKeys.includes(key)) {
-          payload[key] = fullDb[key] || [];
-        }
-      }
-      for (const key of SINGLETON_KEYS) {
-        payload[key] = fullDb[key];
-      }
-
-      // Merge and protect leads not assigned to this sales person
-      const otherLeads = (fullDb.leads || []).filter((l: any) => l.assignedTo && l.assignedTo !== userContext.id);
-      const salesLeads = payload.leads || [];
-      const mergedLeads = [
-        ...otherLeads,
-        ...salesLeads.filter((l: any) => !l.assignedTo || l.assignedTo === userContext.id)
-      ];
-      const leadMap = new Map();
-      mergedLeads.forEach((l: any) => leadMap.set(l.id, l));
-      payload.leads = Array.from(leadMap.values());
-
-      // Merge and protect chats not associated with this sales person's leads
-      const otherLeadPhones = new Set(otherLeads.map((l: any) => l.phone?.replace(/\D/g, "")).filter(Boolean));
-      const otherChats = (fullDb.whatsappChats || []).filter((c: any) => {
-        const norm = c.phone?.replace(/\D/g, "");
-        return norm && otherLeadPhones.has(norm);
-      });
-      const salesChats = payload.whatsappChats || [];
-      const mergedChats = [
-        ...otherChats,
-        ...salesChats
-      ];
-      const chatMap = new Map();
-      mergedChats.forEach((c: any) => chatMap.set(c.phone, c));
-      payload.whatsappChats = Array.from(chatMap.values());
-    } else if (userContext && userContext.role === "translator") {
-      const fullDb = await this.loadAll();
-      // Translators can only update their own profile and task statuses assigned to them
-      for (const key of COLLECTION_KEYS) {
-        if (key === "profiles") {
-          const clientProfiles = payload.profiles || [];
-          const myUpdatedProfile = clientProfiles.find((p: any) => p.id === userContext.id);
-          payload.profiles = (fullDb.profiles || []).map((p: any) => {
-            if (p.id === userContext.id && myUpdatedProfile) {
-              return { ...p, ...myUpdatedProfile, role: p.role, id: p.id }; // Prevent role escalation
-            }
-            return p;
-          });
-        } else {
-          payload[key] = fullDb[key] || [];
-        }
-      }
-      for (const key of SINGLETON_KEYS) {
-        payload[key] = fullDb[key];
-      }
-    }
-
     // Backend guard: Ensure one approved quotation cannot generate multiple tasks
     const quotationIds = new Set<string>();
     if (payload.tasks && Array.isArray(payload.tasks)) {
@@ -365,6 +321,78 @@ export class DatabaseManager {
     const release = await this.writeLock.acquire();
     this.autoPersist = false;
     try {
+      const fullDb = await this.loadAll();
+
+      // Always preserve WhatsApp chats, logs, templates, and settings from the database
+      // because they are updated in real-time by webhooks and dedicated APIs.
+      payload.whatsappChats = fullDb.whatsappChats || [];
+      payload.whatsappLogs = fullDb.whatsappLogs || [];
+      payload.whatsappSettings = fullDb.whatsappSettings || null;
+      payload.whatsappTemplates = fullDb.whatsappTemplates || [];
+
+      // Role-based data merging and security isolation
+      if (userContext && userContext.role === "sales") {
+        // Sales allowed tables. Discard sales-sent values for other tables.
+        const salesAllowedKeys = [
+          "leads", "leadActivities", "clients", "whatsappChats", "whatsappTemplates", "whatsappLogs",
+          "quotations", "invoices", "tasks", "notifications", "feedback"
+        ];
+        
+        for (const key of COLLECTION_KEYS) {
+          if (!salesAllowedKeys.includes(key)) {
+            payload[key] = fullDb[key] || [];
+          }
+        }
+        for (const key of SINGLETON_KEYS) {
+          payload[key] = fullDb[key];
+        }
+
+        // Merge and protect leads not assigned to this sales person
+        const otherLeads = (fullDb.leads || []).filter((l: any) => l.assignedTo && l.assignedTo !== userContext.id);
+        const salesLeads = payload.leads || [];
+        const mergedLeads = [
+          ...otherLeads,
+          ...salesLeads.filter((l: any) => !l.assignedTo || l.assignedTo === userContext.id)
+        ];
+        const leadMap = new Map();
+        mergedLeads.forEach((l: any) => leadMap.set(l.id, l));
+        payload.leads = Array.from(leadMap.values());
+
+        // Merge and protect chats not associated with this sales person's leads
+        const otherLeadPhones = new Set(otherLeads.map((l: any) => l.phone?.replace(/\D/g, "")).filter(Boolean));
+        const otherChats = (fullDb.whatsappChats || []).filter((c: any) => {
+          const norm = c.phone?.replace(/\D/g, "");
+          return norm && otherLeadPhones.has(norm);
+        });
+        const salesChats = payload.whatsappChats || [];
+        const mergedChats = [
+          ...otherChats,
+          ...salesChats
+        ];
+        const chatMap = new Map();
+        mergedChats.forEach((c: any) => chatMap.set(c.phone, c));
+        payload.whatsappChats = Array.from(chatMap.values());
+      } else if (userContext && userContext.role === "translator") {
+        // Translators can only update their own profile and task statuses assigned to them
+        for (const key of COLLECTION_KEYS) {
+          if (key === "profiles") {
+            const clientProfiles = payload.profiles || [];
+            const myUpdatedProfile = clientProfiles.find((p: any) => p.id === userContext.id);
+            payload.profiles = (fullDb.profiles || []).map((p: any) => {
+              if (p.id === userContext.id && myUpdatedProfile) {
+                return { ...p, ...myUpdatedProfile, role: p.role, id: p.id }; // Prevent role escalation
+              }
+              return p;
+            });
+          } else {
+            payload[key] = fullDb[key] || [];
+          }
+        }
+        for (const key of SINGLETON_KEYS) {
+          payload[key] = fullDb[key];
+        }
+      }
+
       const existingProfiles = await this.getEntities("profiles");
       const existingById = new Map(existingProfiles.map((profile) => [profile.id, profile]));
 

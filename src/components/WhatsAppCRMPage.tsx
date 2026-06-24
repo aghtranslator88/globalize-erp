@@ -142,13 +142,92 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
     }
   };
 
+  const fetchLogsFromApi = async () => {
+    try {
+      const response = await fetch('/api/whatsapp/logs', {
+        headers: {
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        }
+      });
+      const json = await response.json();
+      if (json.success && json.logs) {
+        const formattedLogs = json.logs.map((log: any) => {
+          const time = new Date(log.timestamp).toLocaleTimeString();
+          if (log.type === 'incoming') {
+            return `[${time}] INBOUND MSG from ${log.phone}: "${log.payload?.text?.body || ''}"`;
+          } else if (log.type === 'outgoing') {
+            return `[${time}] OUTBOUND DISPATCH to ${log.phone}: "${log.payload?.text?.body || (log.payload?.template ? `Template: ${log.payload.template.name}` : '')}"`;
+          } else if (log.type === 'simulated_incoming') {
+            return `[${time}] SIMULATED INBOUND from ${log.phone}: "${log.payload?.text?.body || ''}"`;
+          } else if (log.type === 'simulated_outgoing') {
+            return `[${time}] SIMULATED OUTBOUND to ${log.phone}: "${log.payload?.text || ''}"`;
+          } else if (log.type === 'status_update') {
+            return `[${time}] STATUS UPDATE: "${log.payload?.status}" for msg ${log.payload?.id}`;
+          } else if (log.type === 'error') {
+            return `[${time}] ERROR for ${log.phone || 'system'}: ${log.error || ''}`;
+          }
+          return `[${time}] ${log.type.toUpperCase()}: ${JSON.stringify(log.payload)}`;
+        });
+        setRecentWebhookLogs(formattedLogs);
+      }
+    } catch (err) {
+      console.error('Failed to fetch WhatsApp logs:', err);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    try {
+      const response = await fetch('/api/whatsapp/logs/clear', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        }
+      });
+      const json = await response.json();
+      if (json.success) {
+        success(isRtl ? 'تم مسح سجلات المراقبة بنجاح!' : 'Triage log history cleared successfully!');
+        setRecentWebhookLogs([]);
+      } else {
+        error(json.error || 'Failed to clear logs.');
+      }
+    } catch (err: any) {
+      error(err.message || 'Connection failed.');
+    }
+  };
+
+  const handleSyncTemplates = async () => {
+    try {
+      const response = await fetch('/api/whatsapp/sync-templates', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        }
+      });
+      const json = await response.json();
+      if (json.success) {
+        success(isRtl 
+          ? `تمت مزامنة عدد ${json.count} قالب بنجاح من ميتا!` 
+          : `Synchronized ${json.count} message templates successfully from Meta WABA!`
+        );
+        await dbInstance.fetchFromServer();
+        setTemplates(dbInstance.whatsappTemplates || []);
+      } else {
+        error(json.error || 'Failed to sync templates.');
+      }
+    } catch (err: any) {
+      error(err.message || 'Connection failed.');
+    }
+  };
+
   // Background Polling for live conversations and statuses
   useEffect(() => {
     fetchChatsFromApi();
+    fetchLogsFromApi();
     setTemplates(dbInstance.whatsappTemplates || []);
     
     const interval = setInterval(() => {
       fetchChatsFromApi();
+      fetchLogsFromApi();
       if (selectedChat) {
         fetchMessagesForSelectedChat(selectedChat.phone);
       }
@@ -181,10 +260,6 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
           aiPrompt
         };
         dbInstance.saveToLocalOnly();
-        setRecentWebhookLogs(prev => [
-          `[${new Date().toLocaleTimeString()}] AI Prompt guidelines and parameters saved.`,
-          ...prev
-        ]);
         success(isRtl ? 'تم حفظ إعدادات الـ AI والوكيل بنجاح!' : 'WhatsApp AI agent configuration updated and saved!');
       } else {
         error(json.error || 'Failed to save configuration.');
@@ -200,13 +275,40 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
     e.preventDefault();
     const userText = webhookTestText.trim();
     if (!userText) return;
-    setWebhookTestText('');
-    setIsWebhookNoticePending(false);
-    warning('Inbound WhatsApp testing is handled by Meta webhook delivery. Configure the webhook URL and send a real test message from Meta Business tools.');
-    setRecentWebhookLogs(prev => [
-      `[${new Date().toLocaleTimeString()}] Local inbound test disabled. Message not sent: "${userText}"`,
-      ...prev
-    ]);
+    if (!webhookTestPhone) {
+      warning(isRtl ? 'يرجى اختيار هاتف العميل أولاً!' : 'Please select a customer phone first.');
+      return;
+    }
+    
+    setIsWebhookNoticePending(true);
+    try {
+      const response = await fetch('/api/whatsapp/simulate-webhook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${dbInstance.getAuthToken()}`
+        },
+        body: JSON.stringify({
+          phone: webhookTestPhone,
+          text: userText,
+          name: webhookTestName || undefined
+        })
+      });
+      const json = await response.json();
+      if (json.success) {
+        success(isRtl ? 'تم إرسال رسالة المحاكاة بنجاح!' : 'Simulated webhook processed successfully!');
+        setWebhookTestText('');
+        await fetchChatsFromApi();
+        await fetchMessagesForSelectedChat(webhookTestPhone);
+        await fetchLogsFromApi();
+      } else {
+        error(json.error || 'Webhook simulation failed.');
+      }
+    } catch (err: any) {
+      error(err.message || 'Connection failed.');
+    } finally {
+      setIsWebhookNoticePending(false);
+    }
   };
 
   const executeManualDispatch = async (e: React.FormEvent) => {
@@ -641,7 +743,7 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
                     ) : (
                       <>
                         <Bot size={13} className="text-brand-gold" />
-                        <span>Show Webhook Test Guidance</span>
+                        <span>{isRtl ? 'إرسال رسالة محاكاة' : 'Simulate Webhook Message'}</span>
                       </>
                     )}
                   </button>
@@ -656,13 +758,23 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
                   <Terminal size={12} />
                   <span>Webhook Event Server Triage</span>
                 </span>
-                <span className="px-1.5 py-0.1 text-[8px] font-mono uppercase bg-green-500/10 text-green-400 border border-green-500/20 rounded">
-                  PORT: 3000
-                </span>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={handleClearLogs}
+                    className="px-2 py-0.5 text-[8px] font-mono uppercase bg-red-950 text-red-400 border border-red-900/50 hover:bg-red-900/20 rounded cursor-pointer transition-colors"
+                  >
+                    Clear Logs
+                  </button>
+                  <span className="px-1.5 py-0.1 text-[8px] font-mono uppercase bg-green-500/10 text-green-400 border border-green-500/20 rounded">
+                    PORT: 3000
+                  </span>
+                </div>
               </div>
               
               <div className="p-3 font-mono text-[9px] text-zinc-300 overflow-y-auto space-y-1.5 text-left flex-1 max-h-[160px] select-all">
-                {recentWebhookLogs.map((log, index) => (
+                {recentWebhookLogs.length === 0 ? (
+                  <p className="text-zinc-500 italic">No triage events logged on server.</p>
+                ) : recentWebhookLogs.map((log, index) => (
                   <p key={index} className="leading-relaxed truncate border-l border-zinc-700/50 pl-2">
                     {log}
                   </p>
@@ -687,18 +799,27 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
               </p>
             </div>
             
-            <button 
-              onClick={() => {
-                info(isRtl 
-                  ? 'إنشاء قوالب مخصصة يتطلب ربط Meta Business API حقيقي معتمد. القوالب الافتراضية نشطة بالكامل للمحاكاة.' 
-                  : 'Custom templates must be created and approved in Meta Business Manager before use.'
-                );
-              }}
-              className="px-3 py-1.5 bg-brand-gold hover:bg-brand-gold-hover text-brand-navy font-bold rounded-lg transition-colors text-xs flex items-center gap-1.5 cursor-pointer shadow-sm"
-            >
-              <Info size={13} />
-              <span>Submit Meta Template Request</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleSyncTemplates}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-750 text-white font-bold rounded-lg transition-colors text-xs flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                <RefreshCw size={13} />
+                <span>{isRtl ? 'مزامنة القوالب من ميتا' : 'Sync Templates from Meta'}</span>
+              </button>
+              <button 
+                onClick={() => {
+                  info(isRtl 
+                    ? 'إنشاء قوالب مخصصة يتطلب ربط Meta Business API حقيقي معتمد. القوالب الافتراضية نشطة بالكامل للمحاكاة.' 
+                    : 'Custom templates must be created and approved in Meta Business Manager before use.'
+                  );
+                }}
+                className="px-3 py-1.5 bg-brand-gold hover:bg-brand-gold-hover text-brand-navy font-bold rounded-lg transition-colors text-xs flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                <Info size={13} />
+                <span>Submit Meta Template Request</span>
+              </button>
+            </div>
           </div>
 
           <div className="p-6">
@@ -783,7 +904,7 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
                     value={phoneNumberId || 'Not configured in env'}
                     className="w-full border border-slate-100 bg-slate-50 rounded-lg p-2 text-xs font-mono text-slate-500 cursor-not-allowed"
                   />
-                  <p className="text-[8.5px] text-slate-400 mt-1">Configured securely via server environment: META_PHONE_NUMBER_ID</p>
+                  <p className="text-[8.5px] text-slate-400 mt-1">Configured securely via server environment: WHATSAPP_PHONE_NUMBER_ID</p>
                 </div>
 
                 <div>
@@ -794,7 +915,7 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
                     value={wabaId || 'Not configured in env'}
                     className="w-full border border-slate-100 bg-slate-50 rounded-lg p-2 text-xs font-mono text-slate-500 cursor-not-allowed"
                   />
-                  <p className="text-[8.5px] text-slate-400 mt-1">Configured securely via server environment: META_WHATSAPP_BUSINESS_ACCOUNT_ID</p>
+                  <p className="text-[8.5px] text-slate-400 mt-1">Configured securely via server environment: WHATSAPP_BUSINESS_ACCOUNT_ID</p>
                 </div>
               </div>
 
@@ -806,7 +927,7 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
                   value={accessToken || 'Not configured in env'}
                   className="w-full border border-slate-100 bg-slate-50 rounded-lg p-2 text-xs font-mono text-slate-500 cursor-not-allowed"
                 />
-                <p className="text-[8.5px] text-slate-400 mt-1">Configured securely via server environment: META_ACCESS_TOKEN</p>
+                <p className="text-[8.5px] text-slate-400 mt-1">Configured securely via server environment: WHATSAPP_ACCESS_TOKEN</p>
               </div>
             </div>
 

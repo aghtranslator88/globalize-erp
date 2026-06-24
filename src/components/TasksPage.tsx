@@ -2874,7 +2874,7 @@ export const TasksPage: React.FC<TasksPageProps> = ({
                       {whatsappStatus.msg}
                       {whatsappStatus.type === 'error' && (
                         <p className="font-normal mt-0.5 opacity-80">
-                          {isRtl ? 'تأكد من تهيئة META_ACCESS_TOKEN في الخادم.' : 'Ensure META_ACCESS_TOKEN is configured in server env.'}
+                          {isRtl ? 'تأكد من تهيئة WHATSAPP_ACCESS_TOKEN في الخادم.' : 'Ensure WHATSAPP_ACCESS_TOKEN is configured in server env.'}
                         </p>
                       )}
                     </div>

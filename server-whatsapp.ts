@@ -10,6 +10,18 @@ type AuthenticatedRequest = Request & {
 let aiClient: GoogleGenAI | null = null;
 let dbManagerInstance: DatabaseManager | null = null;
 
+export function getWhatsAppEnv() {
+  return {
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN || "",
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || "",
+    wabaId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "",
+    appId: process.env.WHATSAPP_APP_ID || "",
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || "",
+    appSecret: process.env.WHATSAPP_APP_SECRET || "",
+    apiVersion: process.env.WHATSAPP_GRAPH_API_VERSION || "v20.0"
+  };
+}
+
 function getAiClient() {
   if (aiClient) return aiClient;
   const apiKey = process.env.GEMINI_API_KEY;
@@ -98,8 +110,8 @@ async function sendMetaMessageWithRetry(
   maxRetries = 3,
   delayMs = 1000
 ): Promise<any> {
-  const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION || "v20.0";
-  const url = `https://graph.facebook.com/${apiVersion}/${phoneId}/messages`;
+  const env = getWhatsAppEnv();
+  const url = `https://graph.facebook.com/${env.apiVersion}/${phoneId}/messages`;
   
   let attempt = 0;
   while (attempt < maxRetries) {
@@ -135,7 +147,7 @@ async function sendMetaMessageWithRetry(
   }
 }
 
-export async function runAIAgentForClient(phone: string, text: string): Promise<string> {
+export async function runAIAgentForClient(phone: string, text: string, isSimulation = false): Promise<string> {
   const db = await loadDB();
   if (!db) throw new Error("Database is not available.");
 
@@ -234,7 +246,7 @@ export async function runAIAgentForClient(phone: string, text: string): Promise<
             notes: parsed.leadNotes || text,
             assignedTo: assigneeId,
             createdAt: timestamp,
-            createdBy: "whatsapp-webhook"
+            createdBy: isSimulation ? "whatsapp-simulator" : "whatsapp-webhook"
           });
           
           db.leadActivities = db.leadActivities || [];
@@ -259,14 +271,14 @@ export async function runAIAgentForClient(phone: string, text: string): Promise<
       direction: "outgoing",
       text: replyText,
       timestamp: new Date().toISOString(),
-      status: "sent",
-      isAi: true
+      status: isSimulation ? "delivered" : "sent",
+      isAi: true,
+      metaMessageId: isSimulation ? `sim-wamid-${crypto.randomBytes(8).toString("hex")}` : undefined
     });
     
     // Auto trigger remote API dispatch if credentials loaded
-    const accessToken = process.env.META_ACCESS_TOKEN;
-    const phoneId = process.env.META_PHONE_NUMBER_ID;
-    if (accessToken && phoneId) {
+    const env = getWhatsAppEnv();
+    if (env.accessToken && env.phoneNumberId && !isSimulation) {
       try {
         const metaPayload = {
           messaging_product: "whatsapp",
@@ -274,7 +286,7 @@ export async function runAIAgentForClient(phone: string, text: string): Promise<
           type: "text",
           text: { body: replyText }
         };
-        const metaResponse = await sendMetaMessageWithRetry(phoneId, accessToken, metaPayload);
+        const metaResponse = await sendMetaMessageWithRetry(env.phoneNumberId, env.accessToken, metaPayload);
         const lastMsg = conversation.messages[conversation.messages.length - 1];
         if (lastMsg) {
           lastMsg.metaMessageId = metaResponse?.messages?.[0]?.id;
@@ -288,11 +300,126 @@ export async function runAIAgentForClient(phone: string, text: string): Promise<
         }
         await logWhatsAppEvent(db, "error", phone, { text: replyText }, sendErr.message);
       }
+    } else if (isSimulation) {
+      await logWhatsAppEvent(db, "simulated_outgoing", phone, { text: replyText });
     }
   }
 
   await saveDB(db);
   return replyText;
+}
+
+export async function processWebhookPayload(body: any, db: any, isSimulation = false): Promise<void> {
+  const entries = body?.entry;
+  if (!Array.isArray(entries)) {
+    await logWhatsAppEvent(db, "error", undefined, body, "Invalid webhook payload format");
+    return;
+  }
+
+  for (const entry of entries) {
+    for (const change of entry.changes || []) {
+      if (change.field !== "messages") continue;
+      
+      const val = change.value;
+      
+      // 1. Process Message Status Updates
+      if (Array.isArray(val?.statuses)) {
+        for (const status of val.statuses) {
+          let updated = false;
+          for (const chat of db.whatsappChats || []) {
+            const msg = chat.messages?.find((m: any) => m.metaMessageId === status.id);
+            if (msg) {
+              msg.status = status.status;
+              if (status.errors && status.errors.length > 0) {
+                msg.error = status.errors[0].message || status.errors[0].title;
+              }
+              updated = true;
+              break;
+            }
+          }
+          await logWhatsAppEvent(db, "status_update", status.recipient_id || status.id, status);
+        }
+      }
+
+      // 2. Process Inbound Messages
+      if (Array.isArray(val?.messages)) {
+        for (const msg of val.messages) {
+          const senderPhone = msg.from.startsWith("+") ? msg.from : `+${msg.from}`;
+          const contact = val.contacts?.find((c: any) => c.wa_id === msg.from);
+          const senderName = contact?.profile?.name || senderPhone;
+          
+          let messageText = "";
+          if (msg.type === "text") {
+            messageText = msg.text?.body || "";
+          } else if (msg.type === "image") {
+            messageText = msg.image?.caption ? `[Image] ${msg.image.caption}` : "[Image]";
+          } else if (msg.type === "document") {
+            messageText = msg.document?.caption ? `[Document] ${msg.document.caption}` : "[Document]";
+          } else if (msg.type === "interactive") {
+            messageText = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "[Interactive Reply]";
+          } else if (msg.type === "button") {
+            messageText = msg.button?.text || "[Button Response]";
+          } else {
+            messageText = `[Unsupported Message Type: ${msg.type}]`;
+          }
+          
+          if (!messageText) continue;
+
+          await logWhatsAppEvent(db, isSimulation ? "simulated_incoming" : "incoming", senderPhone, msg);
+
+          // Auto-capture lead if contact does not exist in CRM leads or clients
+          const matchedClient = db.clients?.find((client: any) => phonesMatch(client.phone, senderPhone));
+          const matchedLead = db.leads?.find((l: any) => phonesMatch(l.phone, senderPhone));
+          
+          if (!matchedClient && !matchedLead) {
+            const leadId = makeId("lead");
+            const assigneeId = getNextSalesAssignee(db);
+            db.leads = db.leads || [];
+            db.leads.push({
+              id: leadId,
+              name: senderName,
+              phone: senderPhone,
+              source: "whatsapp",
+              stage: "new",
+              priority: "medium",
+              estimatedValue: 0,
+              currency: db.brandConfig?.currency || "USD",
+              serviceInterests: [],
+              notes: `Auto-captured via WhatsApp message: ${messageText}`,
+              assignedTo: assigneeId,
+              createdAt: new Date().toISOString(),
+              createdBy: isSimulation ? "whatsapp-simulator" : "whatsapp-webhook"
+            });
+
+            db.leadActivities = db.leadActivities || [];
+            db.leadActivities.push({
+              id: makeId("lact"),
+              leadId,
+              type: "note",
+              description: `Lead auto-captured from inbound message. Assigned to ${assigneeId ? "Sales" : "unassigned"}.`,
+              performedBy: "system",
+              createdAt: new Date().toISOString()
+            });
+          } else if (matchedLead) {
+            // Update follow up / contact timestamp
+            matchedLead.lastContactedAt = new Date().toISOString();
+            db.leadActivities = db.leadActivities || [];
+            db.leadActivities.push({
+              id: makeId("lact"),
+              leadId: matchedLead.id,
+              type: "note",
+              description: `Received WhatsApp message: ${messageText.slice(0, 100)}`,
+              performedBy: "customer",
+              createdAt: new Date().toISOString()
+            });
+          }
+
+          // Route through AI agent or just append message to chat session
+          await runAIAgentForClient(senderPhone, messageText, isSimulation);
+        }
+      }
+    }
+  }
 }
 
 export function registerWhatsAppRoutes(app: express.Application, dbManager: DatabaseManager, authenticated: RequestHandler) {
@@ -303,12 +430,13 @@ export function registerWhatsAppRoutes(app: express.Application, dbManager: Data
     try {
       const db = await loadDB();
       const settings = db?.whatsappSettings || {};
+      const env = getWhatsAppEnv();
       
       const config = {
-        isConfigured: !!(process.env.META_ACCESS_TOKEN && process.env.META_PHONE_NUMBER_ID),
-        phoneNumberId: process.env.META_PHONE_NUMBER_ID ? `***${process.env.META_PHONE_NUMBER_ID.slice(-4)}` : "",
-        wabaId: process.env.META_WHATSAPP_BUSINESS_ACCOUNT_ID ? `***${process.env.META_WHATSAPP_BUSINESS_ACCOUNT_ID.slice(-4)}` : "",
-        verifyToken: process.env.META_VERIFY_TOKEN ? `***${process.env.META_VERIFY_TOKEN.slice(-4)}` : (process.env.WHATSAPP_VERIFY_TOKEN ? `***${process.env.WHATSAPP_VERIFY_TOKEN.slice(-4)}` : ""),
+        isConfigured: !!(env.accessToken && env.phoneNumberId),
+        phoneNumberId: env.phoneNumberId ? `***${env.phoneNumberId.slice(-4)}` : "",
+        wabaId: env.wabaId ? `***${env.wabaId.slice(-4)}` : "",
+        verifyToken: env.verifyToken ? `***${env.verifyToken.slice(-4)}` : "",
         isAiEnabled: settings.isAiEnabled === true,
         aiPrompt: settings.aiPrompt || "",
         webhookUrl: `${req.protocol}://${req.get("host")}/api/whatsapp/webhook`
@@ -391,14 +519,14 @@ export function registerWhatsAppRoutes(app: express.Application, dbManager: Data
 
   // Webhook Verification (GET)
   app.get("/api/whatsapp/webhook", async (req, res) => {
-    const verifyToken = process.env.META_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN;
-    if (!verifyToken) return res.status(503).json({ error: "WhatsApp verification token is not configured in env." });
+    const env = getWhatsAppEnv();
+    if (!env.verifyToken) return res.status(503).json({ error: "WhatsApp verification token is not configured in env." });
 
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    if (mode === "subscribe" && token === verifyToken) {
+    if (mode === "subscribe" && token === env.verifyToken) {
       console.info("WhatsApp Webhook verified successfully.");
       return res.status(200).send(challenge);
     }
@@ -408,8 +536,8 @@ export function registerWhatsAppRoutes(app: express.Application, dbManager: Data
   // Webhook Event Handler (POST)
   app.post("/api/whatsapp/webhook", async (req, res) => {
     try {
-      const appSecret = process.env.META_APP_SECRET;
-      if (appSecret && !validateWebhookSignature(req, appSecret)) {
+      const env = getWhatsAppEnv();
+      if (env.appSecret && !validateWebhookSignature(req, env.appSecret)) {
         console.warn("Invalid signature on incoming WhatsApp webhook event.");
         return res.status(401).json({ error: "Signature verification failed." });
       }
@@ -418,123 +546,161 @@ export function registerWhatsAppRoutes(app: express.Application, dbManager: Data
       const db = await loadDB();
       if (!db) return res.status(503).json({ error: "Database not available." });
 
-      const entries = body?.entry;
-      if (!Array.isArray(entries)) {
-        await logWhatsAppEvent(db, "error", undefined, body, "Invalid webhook payload format");
-        await saveDB(db);
-        return res.status(400).json({ error: "Invalid webhook payload." });
-      }
-
-      for (const entry of entries) {
-        for (const change of entry.changes || []) {
-          if (change.field !== "messages") continue;
-          
-          const val = change.value;
-          
-          // 1. Process Message Status Updates
-          if (Array.isArray(val?.statuses)) {
-            for (const status of val.statuses) {
-              let updated = false;
-              for (const chat of db.whatsappChats || []) {
-                const msg = chat.messages?.find((m: any) => m.metaMessageId === status.id);
-                if (msg) {
-                  msg.status = status.status;
-                  if (status.errors && status.errors.length > 0) {
-                    msg.error = status.errors[0].message || status.errors[0].title;
-                  }
-                  updated = true;
-                  break;
-                }
-              }
-              await logWhatsAppEvent(db, "status_update", status.recipient_id, status);
-            }
-          }
-
-          // 2. Process Inbound Messages
-          if (Array.isArray(val?.messages)) {
-            for (const msg of val.messages) {
-              const senderPhone = `+${msg.from}`;
-              const contact = val.contacts?.find((c: any) => c.wa_id === msg.from);
-              const senderName = contact?.profile?.name || senderPhone;
-              
-              let messageText = "";
-              if (msg.type === "text") {
-                messageText = msg.text?.body || "";
-              } else if (msg.type === "image") {
-                messageText = msg.image?.caption ? `[Image] ${msg.image.caption}` : "[Image]";
-              } else if (msg.type === "document") {
-                messageText = msg.document?.caption ? `[Document] ${msg.document.caption}` : "[Document]";
-              } else if (msg.type === "interactive") {
-                messageText = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "[Interactive Reply]";
-              } else if (msg.type === "button") {
-                messageText = msg.button?.text || "[Button Response]";
-              } else {
-                messageText = `[Unsupported Message Type: ${msg.type}]`;
-              }
-              
-              if (!messageText) continue;
-
-              await logWhatsAppEvent(db, "incoming", senderPhone, msg);
-
-              // Auto-capture lead if contact does not exist in CRM leads or clients
-              const matchedClient = db.clients?.find((client: any) => phonesMatch(client.phone, senderPhone));
-              const matchedLead = db.leads?.find((l: any) => phonesMatch(l.phone, senderPhone));
-              
-              if (!matchedClient && !matchedLead) {
-                const leadId = makeId("lead");
-                const assigneeId = getNextSalesAssignee(db);
-                db.leads = db.leads || [];
-                db.leads.push({
-                  id: leadId,
-                  name: senderName,
-                  phone: senderPhone,
-                  source: "whatsapp",
-                  stage: "new",
-                  priority: "medium",
-                  estimatedValue: 0,
-                  currency: db.brandConfig?.currency || "USD",
-                  serviceInterests: [],
-                  notes: `Auto-captured via WhatsApp message: ${messageText}`,
-                  assignedTo: assigneeId,
-                  createdAt: new Date().toISOString(),
-                  createdBy: "whatsapp-webhook"
-                });
-
-                db.leadActivities = db.leadActivities || [];
-                db.leadActivities.push({
-                  id: makeId("lact"),
-                  leadId,
-                  type: "note",
-                  description: `Lead auto-captured from inbound message. Assigned to ${assigneeId ? "Sales" : "unassigned"}.`,
-                  performedBy: "system",
-                  createdAt: new Date().toISOString()
-                });
-              } else if (matchedLead) {
-                // Update follow up / contact timestamp
-                matchedLead.lastContactedAt = new Date().toISOString();
-                db.leadActivities = db.leadActivities || [];
-                db.leadActivities.push({
-                  id: makeId("lact"),
-                  leadId: matchedLead.id,
-                  type: "note",
-                  description: `Received WhatsApp message: ${messageText.slice(0, 100)}`,
-                  performedBy: "customer",
-                  createdAt: new Date().toISOString()
-                });
-              }
-
-              // Route through AI agent or just append message to chat session
-              await runAIAgentForClient(senderPhone, messageText);
-            }
-          }
-        }
-      }
-
+      await processWebhookPayload(body, db, false);
       await saveDB(db);
       res.status(200).json({ success: true, received: true });
     } catch (error: any) {
       console.error("WhatsApp webhook processing failed:", error);
       res.status(500).json({ success: false, error: "Webhook processing failed." });
+    }
+  });
+
+  // Simulator Inbound Message API (POST)
+  app.post("/api/whatsapp/simulate-webhook", authenticated, async (req: AuthenticatedRequest, res) => {
+    try {
+      const { phone, text, name } = req.body || {};
+      if (!phone || !text) {
+        return res.status(400).json({ success: false, error: "Phone and text are required to simulate a message." });
+      }
+
+      const db = await loadDB();
+      if (!db) return res.status(503).json({ error: "Database not available." });
+
+      const cleanPhone = phone.replace("+", "");
+      const cleanName = name || phone;
+
+      const simulatedPayload = {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: getWhatsAppEnv().wabaId || "simulated-waba-id",
+            changes: [
+              {
+                value: {
+                  messaging_product: "whatsapp",
+                  metadata: {
+                    display_phone_number: "15550000000",
+                    phone_number_id: getWhatsAppEnv().phoneNumberId || "simulated-phone-number-id"
+                  },
+                  contacts: [
+                    {
+                      profile: {
+                        name: cleanName
+                      },
+                      wa_id: cleanPhone
+                    }
+                  ],
+                  messages: [
+                    {
+                      from: cleanPhone,
+                      id: `sim-wamid-${crypto.randomBytes(16).toString("hex")}`,
+                      timestamp: Math.floor(Date.now() / 1000).toString(),
+                      text: {
+                        body: text
+                      },
+                      type: "text"
+                    }
+                  ]
+                },
+                field: "messages"
+              }
+            ]
+          }
+        ]
+      };
+
+      await processWebhookPayload(simulatedPayload, db, true);
+      await saveDB(db);
+
+      res.json({ success: true, simulated: true });
+    } catch (error: any) {
+      console.error("Simulation failed:", error);
+      res.status(500).json({ success: false, error: "Simulation failed." });
+    }
+  });
+
+  // Sync templates from Meta API (POST)
+  app.post("/api/whatsapp/sync-templates", authenticated, async (req: AuthenticatedRequest, res) => {
+    try {
+      const env = getWhatsAppEnv();
+      if (!env.accessToken || !env.wabaId) {
+        return res.status(400).json({ success: false, error: "WhatsApp credentials (WABA ID and Access Token) are not configured." });
+      }
+
+      const url = `https://graph.facebook.com/${env.apiVersion}/${env.wabaId}/message_templates?access_token=${env.accessToken}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (!response.ok) {
+        return res.status(502).json({ success: false, error: `Meta API returned error: ${data.error?.message || response.statusText}` });
+      }
+
+      const db = await loadDB();
+      if (!db) return res.status(503).json({ success: false, error: "Database not available." });
+
+      db.whatsappTemplates = db.whatsappTemplates || [];
+      const syncedTemplates: any[] = [];
+
+      for (const tpl of data.data || []) {
+        const bodyComponent = tpl.components?.find((c: any) => c.type === "BODY");
+        const bodyText = bodyComponent?.text || "";
+
+        const varMatches = bodyText.match(/\{\{\d+\}\}/g) || [];
+        const variables = varMatches.map((m: string) => `var${m.replace(/\D/g, "")}`);
+
+        const templateId = `tpl-${tpl.id || tpl.name}`;
+        const templateObj = {
+          id: templateId,
+          name: tpl.name,
+          category: tpl.category?.toLowerCase() || "utility",
+          language: tpl.language || "en_US",
+          body: bodyText,
+          variables,
+          status: tpl.status?.toLowerCase() || "approved"
+        };
+
+        const existingIdx = db.whatsappTemplates.findIndex((t: any) => t.name === tpl.name && t.language === tpl.language);
+        if (existingIdx >= 0) {
+          db.whatsappTemplates[existingIdx] = templateObj;
+        } else {
+          db.whatsappTemplates.push(templateObj);
+        }
+        syncedTemplates.push(templateObj);
+      }
+
+      await saveDB(db);
+      res.json({ success: true, count: syncedTemplates.length, templates: syncedTemplates });
+    } catch (error: any) {
+      console.error("Template synchronization failed:", error);
+      res.status(500).json({ success: false, error: "Failed to synchronize templates from Meta." });
+    }
+  });
+
+  // Get WhatsApp Webhook Triage Logs (GET)
+  app.get("/api/whatsapp/logs", authenticated, async (req: AuthenticatedRequest, res) => {
+    try {
+      const db = await loadDB();
+      const logs = db?.whatsappLogs || [];
+      const sortedLogs = [...logs]
+        .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 50);
+      res.json({ success: true, logs: sortedLogs });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: "Failed to load WhatsApp logs." });
+    }
+  });
+
+  // Clear WhatsApp Logs (POST)
+  app.post("/api/whatsapp/logs/clear", authenticated, async (req: AuthenticatedRequest, res) => {
+    try {
+      const db = await loadDB();
+      if (db) {
+        db.whatsappLogs = [];
+        await saveDB(db);
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: "Failed to clear logs." });
     }
   });
 
@@ -557,10 +723,9 @@ export function registerWhatsAppRoutes(app: express.Application, dbManager: Data
         }
       }
 
-      const accessToken = process.env.META_ACCESS_TOKEN;
-      const phoneId = process.env.META_PHONE_NUMBER_ID;
+      const env = getWhatsAppEnv();
       
-      if (!accessToken || !phoneId) {
+      if (!env.accessToken || !env.phoneNumberId) {
         return res.status(503).json({ success: false, error: "WhatsApp credentials are not configured in server environment variables." });
       }
 
@@ -586,7 +751,7 @@ export function registerWhatsAppRoutes(app: express.Application, dbManager: Data
 
       let metaResponse;
       try {
-        metaResponse = await sendMetaMessageWithRetry(phoneId, accessToken, payload);
+        metaResponse = await sendMetaMessageWithRetry(env.phoneNumberId, env.accessToken, payload);
       } catch (apiErr: any) {
         await logWhatsAppEvent(db, "error", phone, payload, apiErr.message);
         await saveDB(db);
