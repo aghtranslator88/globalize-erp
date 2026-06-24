@@ -693,28 +693,43 @@ export const WhatsAppCRMPage: React.FC<WhatsAppCRMPageProps> = ({ isRtl }) => {
 
                 <form onSubmit={submitWebhookTestNotice} className="space-y-3 font-sans">
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase block pb-1">{isRtl ? 'رقم هاتف العميل' : 'Sender Phone'}</label>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block pb-1.5">{isRtl ? 'تعبئة سريعة من جهات الاتصال' : 'Quick Select Contact'}</label>
+                    <select
+                      onChange={e => {
+                        if (!e.target.value) return;
+                        const [phone, name] = e.target.value.split('|');
+                        setWebhookTestPhone(phone);
+                        setWebhookTestName(name);
+                      }}
+                      className="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 text-slate-700 font-semibold focus:outline-none focus:ring-1 focus:ring-brand-gold mb-3"
+                    >
+                      <option value="">{isRtl ? 'اختر عميلاً/محادثة حالية للتعبئة...' : 'Select client/lead/chat to populate...'}</option>
+                      {chats.map(c => (
+                        <option key={c.phone} value={`${c.phone}|${c.name}`}>{isRtl ? `محادثة: ${c.name} (${c.phone})` : `Chat: ${c.name} (${c.phone})`}</option>
+                      ))}
+                      {dbInstance.leads.map(l => (
+                        <option key={l.id} value={`${l.phone}|${l.name}`}>{isRtl ? `عميل محتمل: ${l.name} (${l.phone})` : `Lead: ${l.name} (${l.phone})`}</option>
+                      ))}
+                      {dbInstance.clients.map(c => (
+                        <option key={c.id} value={`${c.phone}|${c.name}`}>{isRtl ? `عميل: ${c.name} (${c.phone})` : `Client: ${c.name} (${c.phone})`}</option>
+                      ))}
+                    </select>
+
+                    <label className="text-[10px] font-bold text-slate-500 uppercase block pb-1">{isRtl ? 'بيانات المرسل (الهاتف والاسم)' : 'Sender Details (Phone & Name)'}</label>
                     <div className="grid grid-cols-2 gap-2">
-                      <select 
-                        value={webhookTestPhone}
-                        onChange={e => {
-                          setWebhookTestPhone(e.target.value);
-                          const chat = chats.find(c => c.phone === e.target.value);
-                          setWebhookTestName(chat?.name || '');
-                        }}
-                        className="w-full border border-slate-200 rounded-lg p-1.5 text-xs bg-white text-slate-700 font-semibold focus:outline-none focus:ring-1 focus:ring-brand-gold"
-                      >
-                        <option value=""></option>
-                        {chats.map(chat => (
-                          <option key={chat.phone} value={chat.phone}>{chat.name || chat.phone}</option>
-                        ))}
-                      </select>
-                      
                       <input 
                         type="text" 
-                        value={webhookTestName} 
-                        readOnly 
-                        className="w-full border border-slate-100 bg-slate-50 rounded-lg p-1.5 text-xs text-slate-450 font-bold"
+                        value={webhookTestPhone}
+                        onChange={e => setWebhookTestPhone(e.target.value)}
+                        placeholder={isRtl ? "رقم الهاتف (مثال: 2010...)" : "Phone (e.g. 2010...)"}
+                        className="w-full border border-slate-200 rounded-lg p-1.5 text-xs bg-white text-slate-700 font-semibold focus:outline-none focus:ring-1 focus:ring-brand-gold"
+                      />
+                      <input 
+                        type="text" 
+                        value={webhookTestName}
+                        onChange={e => setWebhookTestName(e.target.value)}
+                        placeholder={isRtl ? "اسم المرسل" : "Sender Name"}
+                        className="w-full border border-slate-200 rounded-lg p-1.5 text-xs bg-white text-slate-700 font-semibold focus:outline-none focus:ring-1 focus:ring-brand-gold"
                       />
                     </div>
                   </div>
